@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>AI Challenge App</title>
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <main class="container">
+      <section class="card" aria-labelledby="title">
+        <p class="eyebrow">DeepSeek chat</p>
+        <h1 id="title">AI Challenge App</h1>
+        <p class="intro">Задайте вопрос, выберите настройки и посмотрите безопасный журнал обмена данными.</p>
+
+        <form id="chat-form">
+          <label for="prompt">Ваш вопрос</label>
+          <textarea id="prompt" name="prompt" rows="7" maxlength="32000" placeholder="Например: Объясни простыми словами, что такое HTTP" required autofocus></textarea>
+
+          <fieldset>
+            <legend>Настройки генерации</legend>
+            <p class="hint">Одновременно можно использовать <code>temperature</code> или <code>top_p</code>, но не оба: это разные способы выбора следующего слова.</p>
+
+            <div class="mode-switch" role="radiogroup" aria-label="Способ сэмплирования">
+              <label><input type="radio" name="sampling-mode" value="temperature" checked> Temperature</label>
+              <label><input type="radio" name="sampling-mode" value="top-p"> Top P</label>
+            </div>
+
+            <div class="range-row">
+              <label for="temperature">Temperature: <output id="temperature-value">0.7</output></label>
+              <input id="temperature" type="range" min="0" max="2" step="0.1" value="0.7">
+              <small>Ниже — предсказуемее; выше — разнообразнее.</small>
+            </div>
+            <div class="range-row">
+              <label for="top-p">Top P: <output id="top-p-value">0.9</output></label>
+              <input id="top-p" type="range" min="0" max="1" step="0.05" value="0.9" disabled>
+              <small>Ограничивает выбор наиболее вероятными вариантами.</small>
+            </div>
+            <div class="range-row">
+              <label for="max-tokens">Max tokens: <output id="max-tokens-value">512</output></label>
+              <input id="max-tokens" type="range" min="64" max="2048" step="64" value="512">
+              <small>Максимальная длина ответа, а не всего контекста.</small>
+            </div>
+          </fieldset>
+
+          <details class="unsupported">
+            <summary>Параметры из конспекта, которые сейчас не применяются</summary>
+            <label><input type="checkbox" disabled> Top K — нет в актуальной спецификации DeepSeek Chat Completions.</label>
+            <label><input type="checkbox" disabled> Seed — нет в актуальной спецификации этого endpoint.</label>
+            <label><input type="checkbox" disabled> Frequency penalty — устарел и не влияет на результат.</label>
+            <label><input type="checkbox" disabled> Presence penalty — устарел и не влияет на результат.</label>
+          </details>
+
+          <p class="hint">Ключ DeepSeek находится только на сервере и не передаётся в браузер или журнал.</p>
+          <button id="submit" type="submit">Спросить DeepSeek</button>
+        </form>
+      </section>
+
+      <section class="card answer-card" aria-live="polite" aria-labelledby="answer-title">
+        <div class="answer-heading">
+          <h2 id="answer-title">Ответ модели</h2>
+          <span id="status" role="status"></span>
+        </div>
+        <p id="answer">Здесь появится ответ.</p>
+      </section>
+
+      <details class="card logs-card" open>
+        <summary>Технический журнал (без API-ключа)</summary>
+        <p class="hint">Здесь видны данные, отправленные из браузера, и безопасная сводка ответа сервера. API-ключ и HTTP-заголовок Authorization намеренно не отображаются.</p>
+        <pre id="request-log">Журнал появится после отправки вопроса.</pre>
+      </details>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,70 @@
+package deepseek
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"ai-challenge-app/internal/models"
+)
+
+func TestCompleteBuildsSafeDeepSeekRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("authorization = %q", got)
+		}
+		var request completionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Model != "deepseek-v4-flash" || request.Thinking.Type != "disabled" || request.Temperature == nil || *request.Temperature != 0.7 || request.MaxTokens != 256 || request.TopP != nil {
+			t.Fatalf("unexpected request: %#v", request)
+		}
+		if len(request.Messages) != 2 || request.Messages[1].Content != "Привет" {
+			t.Fatalf("unexpected messages: %#v", request.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Здравствуйте!"}}]}`))
+	}))
+	defer server.Close()
+
+	client := newClient("test-key", &http.Client{Timeout: time.Second}, server.URL)
+	temperature := 0.7
+	answer, err := client.Complete(context.Background(), "Привет", models.GenerationSettings{Temperature: &temperature, MaxTokens: 256})
+	if err != nil || answer != "Здравствуйте!" {
+		t.Fatalf("Complete() = %q, %v", answer, err)
+	}
+}
+
+func TestCompleteErrors(t *testing.T) {
+	if _, err := NewClient("", time.Second).Complete(context.Background(), "hi", models.GenerationSettings{MaxTokens: 512}); !errors.Is(err, ErrNoAPIKey) {
+		t.Fatalf("error = %v", err)
+	}
+
+	for _, test := range []struct {
+		status int
+		want   error
+	}{
+		{http.StatusUnauthorized, ErrUnauthorized},
+		{http.StatusTooManyRequests, ErrRateLimited},
+		{http.StatusInternalServerError, ErrUpstream},
+	} {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+			}))
+			defer server.Close()
+			_, err := newClient("key", server.Client(), server.URL).Complete(context.Background(), "hi", models.GenerationSettings{MaxTokens: 512})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}

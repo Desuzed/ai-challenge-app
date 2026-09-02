@@ -1,0 +1,15 @@
+# Build products
+ai-challenge-app
+*.exe
+*.test
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
