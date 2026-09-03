@@ -7,6 +7,7 @@ const requestLog = document.querySelector('#request-log');
 const temperature = document.querySelector('#temperature');
 const topP = document.querySelector('#top-p');
 const maxTokens = document.querySelector('#max-tokens');
+let savedMaxTokens = maxTokens.value;
 
 function showValue(inputId, outputId) {
   const input = document.querySelector(inputId);
@@ -28,6 +29,30 @@ document.querySelectorAll('input[name="sampling-mode"]').forEach((input) => {
   input.addEventListener('change', syncSamplingMode);
 });
 
+function syncResponseMode() {
+  const mode = document.querySelector('input[name="response-mode"]:checked').value;
+  const fixedLimits = { length: 120, all: 180 };
+  if (fixedLimits[mode]) {
+    if (!maxTokens.disabled) savedMaxTokens = maxTokens.value;
+    maxTokens.value = fixedLimits[mode];
+    document.querySelector('#max-tokens-value').value = maxTokens.value;
+    maxTokens.disabled = true;
+    return;
+  }
+  if (maxTokens.disabled) {
+    maxTokens.value = savedMaxTokens;
+    document.querySelector('#max-tokens-value').value = maxTokens.value;
+  }
+  maxTokens.disabled = false;
+}
+
+document.querySelectorAll('input[name="response-mode"]').forEach((input) => {
+  input.addEventListener('change', syncResponseMode);
+});
+
+maxTokens.addEventListener('input', () => { savedMaxTokens = maxTokens.value; });
+syncResponseMode();
+
 function prettyJSON(value) {
   return JSON.stringify(value, null, 2);
 }
@@ -48,7 +73,8 @@ form.addEventListener('submit', async (event) => {
   const settings = { maxTokens: Number(maxTokens.value) };
   if (mode === 'temperature') settings.temperature = Number(temperature.value);
   if (mode === 'top-p') settings.topP = Number(topP.value);
-  const requestBody = { prompt, settings };
+  const responseMode = document.querySelector('input[name="response-mode"]:checked').value;
+  const requestBody = { prompt, mode: responseMode, settings };
 
   submit.disabled = true;
   status.textContent = 'Модель отвечает…';
@@ -67,6 +93,7 @@ form.addEventListener('submit', async (event) => {
     const debug = payload.debug || { httpStatus: response.status };
     requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON(debug)}`;
     if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ.');
+    requestLog.textContent += `\n\nОТВЕТ МОДЕЛИ\n${payload.answer}`;
     answer.textContent = payload.answer;
     status.textContent = 'Готово';
   } catch (error) {
