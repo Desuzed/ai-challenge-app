@@ -48,12 +48,18 @@ type message struct {
 }
 
 type completionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []message `json:"messages"`
-	Thinking    thinking  `json:"thinking"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	TopP        *float64  `json:"top_p,omitempty"`
-	MaxTokens   int       `json:"max_tokens"`
+	Model          string          `json:"model"`
+	Messages       []message       `json:"messages"`
+	Thinking       thinking        `json:"thinking"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	TopP           *float64        `json:"top_p,omitempty"`
+	MaxTokens      int             `json:"max_tokens"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Stop           []string        `json:"stop,omitempty"`
+}
+
+type responseFormat struct {
+	Type string `json:"type"`
 }
 
 type thinking struct {
@@ -62,60 +68,85 @@ type thinking struct {
 
 type completionResponse struct {
 	Choices []struct {
-		Message message `json:"message"`
+		Message      message `json:"message"`
+		FinishReason string  `json:"finish_reason"`
 	} `json:"choices"`
 }
 
 // Complete sends one request. The key is kept only in this server-side client.
-func (c *Client) Complete(ctx context.Context, prompt string, settings models.GenerationSettings) (string, error) {
+func (c *Client) Complete(ctx context.Context, prompt string, mode models.ResponseMode, settings models.GenerationSettings) (string, string, error) {
 	if c.apiKey == "" {
-		return "", ErrNoAPIKey
+		return "", "", ErrNoAPIKey
 	}
+	system, responseFormat, stop, maxTokens := requestControls(mode, settings.MaxTokens)
 
 	body, err := json.Marshal(completionRequest{
 		Model: model,
 		Messages: []message{
-			{Role: "system", Content: "You are a helpful assistant. Give clear, accurate answers in the user's language. Do not reveal private reasoning; give a brief explanation when useful."},
+			{Role: "system", Content: system},
 			{Role: "user", Content: prompt},
 		},
-		Thinking:    thinking{Type: "disabled"},
-		Temperature: settings.Temperature,
-		TopP:        settings.TopP,
-		MaxTokens:   settings.MaxTokens,
+		Thinking:       thinking{Type: "disabled"},
+		Temperature:    settings.Temperature,
+		TopP:           settings.TopP,
+		MaxTokens:      maxTokens,
+		ResponseFormat: responseFormat,
+		Stop:           stop,
 	})
 	if err != nil {
-		return "", fmt.Errorf("encode request: %w", err)
+		return "", "", fmt.Errorf("encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return "", "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", ErrUpstream
+		return "", "", ErrUpstream
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", ErrUnauthorized
+		return "", "", ErrUnauthorized
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return "", ErrRateLimited
+		return "", "", ErrRateLimited
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", ErrUpstream
+		return "", "", ErrUpstream
 	}
 
 	var decoded completionResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&decoded); err != nil {
-		return "", ErrUpstream
+		return "", "", ErrUpstream
 	}
 	if len(decoded.Choices) == 0 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
-		return "", ErrUpstream
+		return "", "", ErrUpstream
 	}
-	return decoded.Choices[0].Message.Content, nil
+	answer := strings.TrimSpace(strings.ReplaceAll(decoded.Choices[0].Message.Content, models.StopSequence, ""))
+	return answer, decoded.Choices[0].FinishReason, nil
+}
+
+func requestControls(mode models.ResponseMode, selectedMaxTokens int) (string, *responseFormat, []string, int) {
+	base := "You are a helpful assistant. Answer accurately in Russian. Do not reveal private reasoning."
+	jsonInstruction := ` Return only valid JSON, without Markdown or extra text, with exactly this shape: {"film":"Интерстеллар","actors":["full name"],"answer":"brief answer"}. Include 3 to 6 actors.`
+	lengthInstruction := " Keep the answer concise: no more than 300 characters."
+	finishInstruction := " Finish immediately after the complete answer. Do not add recommendations, questions, or extra commentary."
+
+	switch mode {
+	case models.ModeFormat:
+		return base + jsonInstruction, &responseFormat{Type: "json_object"}, nil, selectedMaxTokens
+	case models.ModeLength:
+		return base + lengthInstruction, nil, nil, 120
+	case models.ModeFinish:
+		return base + finishInstruction + " End the response with the marker " + models.StopSequence + ".", nil, []string{models.StopSequence}, selectedMaxTokens
+	case models.ModeAll:
+		return base + jsonInstruction + " The value of answer must be no more than 220 characters." + finishInstruction + " After the closing JSON brace, write the marker " + models.StopSequence + ".", &responseFormat{Type: "json_object"}, []string{models.StopSequence}, 180
+	default:
+		return base, nil, nil, selectedMaxTokens
+	}
 }
