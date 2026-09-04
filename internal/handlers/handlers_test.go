@@ -131,7 +131,7 @@ func TestModeTokenLimits(t *testing.T) {
 
 func TestChatDefaultsMissingModeToUnrestricted(t *testing.T) {
 	client := &fakeClient{answer: "ok"}
-	recorder := postJSON(t, New(client), `{"prompt":"Кто снимался в фильме интерстеллар"}`)
+	recorder := postJSON(t, New(client), `{"prompt":"Что такое HTTP?"}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 	}

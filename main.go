@@ -1,14 +1,22 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/handlers"
+)
+
+const (
+	localEnvFile = ".env"
+	apiKeyEnvVar = "DEEPSEEK_API_KEY"
 )
 
 func main() {
@@ -17,7 +25,12 @@ func main() {
 		port = "8080"
 	}
 
-	client := deepseek.NewClient(os.Getenv("DEEPSEEK_API_KEY"), 45*time.Second)
+	apiKey, err := loadDeepSeekAPIKey(os.Getenv, os.ReadFile)
+	if err != nil {
+		log.Print("warning: local API key file could not be read; API key may be unavailable")
+	}
+
+	client := deepseek.NewClient(apiKey, 45*time.Second)
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
 	mux.Handle("/api/chat", http.HandlerFunc(handlers.New(client).Chat))
@@ -33,6 +46,36 @@ func main() {
 
 	log.Printf("AI Challenge App listening on http://localhost:%s", port)
 	log.Fatal(server.ListenAndServe())
+}
+
+func loadDeepSeekAPIKey(lookupEnv func(string) string, readFile func(string) ([]byte, error)) (string, error) {
+	if apiKey := strings.TrimSpace(lookupEnv(apiKeyEnvVar)); apiKey != "" {
+		return apiKey, nil
+	}
+
+	data, err := readFile(localEnvFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return deepSeekAPIKeyFromEnv(data), nil
+}
+
+func deepSeekAPIKeyFromEnv(data []byte) string {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		name, value, ok := strings.Cut(line, "=")
+		if ok && strings.TrimSpace(name) == apiKeyEnvVar {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func securityHeaders(next http.Handler) http.Handler {
