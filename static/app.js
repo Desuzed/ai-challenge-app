@@ -7,7 +7,41 @@ const requestLog = document.querySelector('#request-log');
 const temperature = document.querySelector('#temperature');
 const topP = document.querySelector('#top-p');
 const maxTokens = document.querySelector('#max-tokens');
+const tabList = document.querySelector('[role="tablist"]');
+const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+const tabPanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
 let savedMaxTokens = maxTokens.value;
+
+function activateTab(tab, focus = false) {
+  const panelID = tab.getAttribute('aria-controls');
+  tabList.dataset.activeTab = tab.dataset.tab;
+
+  tabs.forEach((item) => {
+    const isActive = item === tab;
+    item.setAttribute('aria-selected', String(isActive));
+    item.tabIndex = isActive ? 0 : -1;
+  });
+  tabPanels.forEach((panel) => {
+    panel.hidden = panel.id !== panelID;
+  });
+
+  if (focus) tab.focus();
+}
+
+tabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => activateTab(tab));
+  tab.addEventListener('keydown', (event) => {
+    let nextIndex;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (index + 1) % tabs.length;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (index - 1 + tabs.length) % tabs.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = tabs.length - 1;
+    if (nextIndex === undefined) return;
+
+    event.preventDefault();
+    activateTab(tabs[nextIndex], true);
+  });
+});
 
 function showValue(inputId, outputId) {
   const input = document.querySelector(inputId);
@@ -62,6 +96,7 @@ form.addEventListener('submit', async (event) => {
   const prompt = promptInput.value.trim();
 
   if (!prompt) {
+    activateTab(document.querySelector('#generation-tab'));
     answer.textContent = 'Введите вопрос, чтобы продолжить.';
     answer.classList.add('error');
     status.textContent = 'Ошибка';

@@ -133,7 +133,7 @@ func (c *Client) Complete(ctx context.Context, prompt string, mode models.Respon
 
 func requestControls(mode models.ResponseMode, selectedMaxTokens int) (string, *responseFormat, []string, int) {
 	base := "You are a helpful assistant. Answer accurately in Russian. Do not reveal private reasoning."
-	jsonInstruction := ` Return only valid JSON, without Markdown or extra text, with exactly this shape: {"film":"Интерстеллар","actors":["full name"],"answer":"brief answer"}. Include 3 to 6 actors.`
+	jsonInstruction := ` Return only valid JSON, without Markdown or extra text, with exactly this shape: {"film":"название фильма","actors":["полное имя"],"answer":"краткий ответ"}. Include 3 to 6 actors.`
 	lengthInstruction := " Keep the answer concise: no more than 300 characters."
 	finishInstruction := " Finish immediately after the complete answer. Do not add recommendations, questions, or extra commentary."
 

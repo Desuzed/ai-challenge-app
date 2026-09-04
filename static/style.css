@@ -10,8 +10,17 @@ form { display: grid; gap: 12px; }
 label, legend { font-weight: 650; font-size: .94rem; }
 input, textarea, button { font: inherit; }
 textarea { width: 100%; padding: 11px 12px; border: 1px solid #b9c7d8; border-radius: 8px; background: #fff; resize: vertical; }
-textarea[readonly] { background: #f8fafc; color: #334155; cursor: default; }
 textarea:focus, input:focus { outline: 3px solid #bdd1ff; border-color: #4169e1; }
+.lesson-tabs { display: grid; gap: 16px; }
+.lesson-tablist { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid #d7e1ef; }
+.lesson-tab { z-index: 1; margin: 0; padding: 0 8px 12px; border: 0; border-radius: 0; background: transparent; color: #526174; font-size: .94rem; font-weight: 650; text-align: center; }
+.lesson-tab:hover { background: transparent; color: #395577; }
+.lesson-tab:focus-visible { outline: 3px solid #bdd1ff; outline-offset: 2px; }
+.lesson-tab[aria-selected="true"] { color: #315edb; }
+.lesson-tab-indicator { position: absolute; bottom: -1px; left: 0; width: 50%; height: 3px; border-radius: 3px 3px 0 0; background: #4169e1; transition: transform .24s cubic-bezier(.2, .8, .2, 1); }
+.lesson-tablist[data-active-tab="response"] .lesson-tab-indicator { transform: translateX(100%); }
+.lesson-panel { display: grid; gap: 12px; }
+.lesson-panel[hidden] { display: none; }
 fieldset { margin: 4px 0 0; padding: 16px; border: 1px solid #d7e1ef; border-radius: 10px; }
 legend { padding: 0 6px; }
 .hint, small { color: #526174; font-size: .88rem; margin: 0; }
@@ -36,4 +45,5 @@ button:hover { background: #234cb9; } button:disabled { cursor: wait; opacity: .
 .logs-card { min-height: 120px; } .logs-card[open] summary { margin-bottom: 12px; }
 #request-log { margin: 16px 0 0; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; background: #111827; color: #d1fae5; font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .error { color: #b42318; }
+@media (prefers-reduced-motion: reduce) { .lesson-tab-indicator { transition: none; } }
 @media (max-width: 560px) { .container { margin: 20px auto; } .card { padding: 20px; } .range-row { grid-template-columns: 1fr; } .range-row small { grid-column: 1; } }
