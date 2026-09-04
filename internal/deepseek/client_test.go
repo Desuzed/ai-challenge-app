@@ -37,14 +37,14 @@ func TestCompleteBuildsSafeDeepSeekRequest(t *testing.T) {
 
 	client := newClient("test-key", &http.Client{Timeout: time.Second}, server.URL)
 	temperature := 0.7
-	answer, err := client.Complete(context.Background(), "Привет", models.GenerationSettings{Temperature: &temperature, MaxTokens: 256})
+	answer, _, err := client.Complete(context.Background(), "Привет", models.ModeUnrestricted, models.GenerationSettings{Temperature: &temperature, MaxTokens: 256})
 	if err != nil || answer != "Здравствуйте!" {
 		t.Fatalf("Complete() = %q, %v", answer, err)
 	}
 }
 
 func TestCompleteErrors(t *testing.T) {
-	if _, err := NewClient("", time.Second).Complete(context.Background(), "hi", models.GenerationSettings{MaxTokens: 512}); !errors.Is(err, ErrNoAPIKey) {
+	if _, _, err := NewClient("", time.Second).Complete(context.Background(), "hi", models.ModeUnrestricted, models.GenerationSettings{MaxTokens: 512}); !errors.Is(err, ErrNoAPIKey) {
 		t.Fatalf("error = %v", err)
 	}
 
@@ -61,10 +61,32 @@ func TestCompleteErrors(t *testing.T) {
 				w.WriteHeader(test.status)
 			}))
 			defer server.Close()
-			_, err := newClient("key", server.Client(), server.URL).Complete(context.Background(), "hi", models.GenerationSettings{MaxTokens: 512})
+			_, _, err := newClient("key", server.Client(), server.URL).Complete(context.Background(), "hi", models.ModeUnrestricted, models.GenerationSettings{MaxTokens: 512})
 			if !errors.Is(err, test.want) {
 				t.Fatalf("error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestRequestControls(t *testing.T) {
+	_, format, stop, tokens := requestControls(models.ModeFormat, 512)
+	if format == nil || format.Type != "json_object" || len(stop) != 0 || tokens != 512 {
+		t.Fatalf("format controls are invalid: %#v %#v %d", format, stop, tokens)
+	}
+
+	_, format, stop, tokens = requestControls(models.ModeLength, 512)
+	if format != nil || len(stop) != 0 || tokens != 120 {
+		t.Fatalf("length controls are invalid: %#v %#v %d", format, stop, tokens)
+	}
+
+	_, format, stop, tokens = requestControls(models.ModeFinish, 512)
+	if format != nil || len(stop) != 1 || stop[0] != models.StopSequence || tokens != 512 {
+		t.Fatalf("finish controls are invalid: %#v %#v %d", format, stop, tokens)
+	}
+
+	_, format, stop, tokens = requestControls(models.ModeAll, 512)
+	if format == nil || format.Type != "json_object" || len(stop) != 1 || stop[0] != models.StopSequence || tokens != 180 {
+		t.Fatalf("all controls are invalid: %#v %#v %d", format, stop, tokens)
 	}
 }

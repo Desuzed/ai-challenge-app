@@ -6,8 +6,21 @@ type GenerationSettings struct {
 	MaxTokens   int      `json:"maxTokens"`
 }
 
+type ResponseMode string
+
+const StopSequence = "<<END>>"
+
+const (
+	ModeUnrestricted ResponseMode = "unrestricted"
+	ModeFormat       ResponseMode = "format"
+	ModeLength       ResponseMode = "length"
+	ModeFinish       ResponseMode = "finish"
+	ModeAll          ResponseMode = "all"
+)
+
 type ChatRequest struct {
 	Prompt   string             `json:"prompt"`
+	Mode     ResponseMode       `json:"mode"`
 	Settings GenerationSettings `json:"settings"`
 }
 
@@ -18,6 +31,9 @@ type DebugInfo struct {
 	HTTPStatus       int                `json:"httpStatus"`
 	DurationMS       int64              `json:"durationMs"`
 	AnswerCharacters int                `json:"answerCharacters,omitempty"`
+	Mode             ResponseMode       `json:"mode"`
+	FinishReason     string             `json:"finishReason,omitempty"`
+	StopSequence     string             `json:"stopSequence,omitempty"`
 }
 
 type ChatResponse struct {

@@ -20,7 +20,7 @@ const (
 )
 
 type completer interface {
-	Complete(context.Context, string, models.GenerationSettings) (string, error)
+	Complete(context.Context, string, models.ResponseMode, models.GenerationSettings) (string, string, error)
 }
 
 type Handler struct {
@@ -65,12 +65,21 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
+	// Backward compatibility for an already-open browser tab with an older JS file.
+	if input.Mode == "" {
+		input.Mode = models.ModeUnrestricted
+	}
+	if !validMode(input.Mode) {
+		writeError(w, http.StatusBadRequest, "Выберите корректный режим контроля ответа.", nil)
+		return
+	}
+	applyModeTokenLimit(&input.Settings, input.Mode)
 
 	started := time.Now()
-	debug := models.DebugInfo{Model: deepseek.ModelName(), PromptCharacters: utf8.RuneCountInString(prompt), Settings: input.Settings}
+	debug := models.DebugInfo{Model: deepseek.ModelName(), PromptCharacters: utf8.RuneCountInString(prompt), Settings: input.Settings, Mode: input.Mode, StopSequence: stopSequenceForMode(input.Mode)}
 	ctx, cancel := context.WithTimeout(r.Context(), 50*time.Second)
 	defer cancel()
-	answer, err := h.client.Complete(ctx, prompt, input.Settings)
+	answer, finishReason, err := h.client.Complete(ctx, prompt, input.Mode, input.Settings)
 	debug.DurationMS = time.Since(started).Milliseconds()
 	if err != nil {
 		status, message := errorResponse(err)
@@ -81,7 +90,33 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 
 	debug.HTTPStatus = http.StatusOK
 	debug.AnswerCharacters = utf8.RuneCountInString(answer)
+	debug.FinishReason = finishReason
 	writeJSON(w, http.StatusOK, models.ChatResponse{Answer: answer, Debug: debug})
+}
+
+func applyModeTokenLimit(settings *models.GenerationSettings, mode models.ResponseMode) {
+	switch mode {
+	case models.ModeLength:
+		settings.MaxTokens = 120
+	case models.ModeAll:
+		settings.MaxTokens = 180
+	}
+}
+
+func stopSequenceForMode(mode models.ResponseMode) string {
+	if mode == models.ModeFinish || mode == models.ModeAll {
+		return models.StopSequence
+	}
+	return ""
+}
+
+func validMode(mode models.ResponseMode) bool {
+	switch mode {
+	case models.ModeUnrestricted, models.ModeFormat, models.ModeLength, models.ModeFinish, models.ModeAll:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateSettings(settings *models.GenerationSettings) error {
