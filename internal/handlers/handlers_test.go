@@ -14,17 +14,33 @@ import (
 )
 
 type fakeClient struct {
-	answer   string
-	err      error
-	prompt   string
-	settings models.GenerationSettings
-	mode     models.ResponseMode
+	answer            string
+	err               error
+	prompt            string
+	settings          models.GenerationSettings
+	mode              models.ResponseMode
+	reasoningAnswers  []string
+	reasoningPrompts  []string
+	reasoningSystems  []string
+	reasoningSettings []models.GenerationSettings
 }
 
 func (f *fakeClient) Complete(_ context.Context, prompt string, mode models.ResponseMode, settings models.GenerationSettings) (string, string, error) {
 	f.prompt = prompt
 	f.mode = mode
 	f.settings = settings
+	return f.answer, "stop", f.err
+}
+
+func (f *fakeClient) CompleteWithSystem(_ context.Context, system, prompt string, settings models.GenerationSettings) (string, string, error) {
+	f.reasoningSystems = append(f.reasoningSystems, system)
+	f.reasoningPrompts = append(f.reasoningPrompts, prompt)
+	f.reasoningSettings = append(f.reasoningSettings, settings)
+	if len(f.reasoningAnswers) > 0 {
+		answer := f.reasoningAnswers[0]
+		f.reasoningAnswers = f.reasoningAnswers[1:]
+		return answer, "stop", f.err
+	}
 	return f.answer, "stop", f.err
 }
 
@@ -140,6 +156,75 @@ func TestChatDefaultsMissingModeToUnrestricted(t *testing.T) {
 	}
 }
 
+func TestReasoningPromptDesignerUsesGeneratedPrompt(t *testing.T) {
+	client := &fakeClient{reasoningAnswers: []string{"Выдели данные, выполни расчёт и проверь итог.", "Ответ: 1/3\nПроверка: условная вероятность учтена."}}
+	recorder := postReasoningJSON(t, New(client), `{"task":"  Найди вероятность.  ","approach":"prompt_designer","settings":{"topP":0.9,"maxTokens":256}}`)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	if len(client.reasoningPrompts) != 2 || len(client.reasoningSystems) != 2 {
+		t.Fatalf("reasoning calls = %d, want 2", len(client.reasoningPrompts))
+	}
+	if client.reasoningPrompts[0] != "<task>\nНайди вероятность.\n</task>" {
+		t.Fatalf("designer prompt = %q", client.reasoningPrompts[0])
+	}
+	if !strings.Contains(client.reasoningPrompts[1], "<generated_prompt>\nВыдели данные") || !strings.Contains(client.reasoningPrompts[1], "<original_task>\nНайди вероятность.") {
+		t.Fatalf("solver prompt = %q", client.reasoningPrompts[1])
+	}
+	if client.reasoningSettings[0].Temperature == nil || *client.reasoningSettings[0].Temperature != 0.2 || client.reasoningSettings[0].TopP != nil || client.reasoningSettings[0].MaxTokens != 720 {
+		t.Fatalf("designer settings = %#v", client.reasoningSettings[0])
+	}
+	if client.reasoningSettings[1].TopP == nil || *client.reasoningSettings[1].TopP != 0.9 || client.reasoningSettings[1].MaxTokens != 256 {
+		t.Fatalf("solver settings = %#v", client.reasoningSettings[1])
+	}
+
+	var response models.ReasoningResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.PreparedPrompt != "Выдели данные, выполни расчёт и проверь итог." || response.Answer != "Ответ: 1/3\nПроверка: условная вероятность учтена." || response.Debug.Requests != 2 {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestReasoningApproachesUseDifferentInstructions(t *testing.T) {
+	tests := []struct {
+		approach models.ReasoningApproach
+		wantPart string
+	}{
+		{models.ReasoningDirect, reasoningBaseInstruction},
+		{models.ReasoningStepByStep, "Решай пошагово"},
+		{models.ReasoningExpertPanel, "Аналитик"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.approach), func(t *testing.T) {
+			client := &fakeClient{answer: "Готовое решение"}
+			recorder := postReasoningJSON(t, New(client), `{"task":"Задача","approach":"`+string(test.approach)+`","settings":{"maxTokens":256}}`)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			if len(client.reasoningSystems) != 1 || !strings.Contains(client.reasoningSystems[0], test.wantPart) {
+				t.Fatalf("system prompts = %#v, want part %q", client.reasoningSystems, test.wantPart)
+			}
+		})
+	}
+}
+
+func TestReasoningValidation(t *testing.T) {
+	client := &fakeClient{answer: "ok"}
+	for _, body := range []string{
+		`{"task":"","approach":"direct"}`,
+		`{"task":"Задача","approach":"unknown"}`,
+		`{"task":"Задача","approach":"direct","settings":{"temperature":0.2,"topP":0.9}}`,
+	} {
+		recorder := postReasoningJSON(t, New(client), body)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, want %d", body, recorder.Code, http.StatusBadRequest)
+		}
+	}
+}
+
 func TestStopSequenceForMode(t *testing.T) {
 	if got := stopSequenceForMode(models.ModeFinish); got != models.StopSequence {
 		t.Fatalf("finish stop sequence = %q", got)
@@ -158,5 +243,14 @@ func postJSON(t *testing.T, handler *Handler, body string) *httptest.ResponseRec
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	handler.Chat(recorder, req)
+	return recorder
+}
+
+func postReasoningJSON(t *testing.T, handler *Handler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/reasoning", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.Reasoning(recorder, req)
 	return recorder
 }

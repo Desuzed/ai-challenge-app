@@ -12,10 +12,10 @@
       <section class="card" aria-labelledby="title">
         <p class="eyebrow">DeepSeek chat</p>
         <h1 id="title">AI Challenge App</h1>
-        <p class="intro">Один вопрос отправляется во всех режимах. Меняйте только способ контроля ответа и сравнивайте результат.</p>
+        <p class="intro">Одна задача отправляется во всех режимах. Меняйте только способ управления ответом или рассуждением и сравнивайте результат.</p>
 
         <form id="chat-form">
-          <label for="prompt">Одинаковый вопрос для всех запусков</label>
+          <label for="prompt">Одинаковая задача для всех запусков</label>
           <textarea id="prompt" name="prompt" rows="2" maxlength="32000" autofocus></textarea>
 
           <button id="submit" type="submit">Спросить DeepSeek</button>
@@ -24,6 +24,7 @@
             <div class="lesson-tablist" role="tablist" aria-label="Части челленджа" data-active-tab="generation">
               <button id="generation-tab" class="lesson-tab" type="button" role="tab" aria-selected="true" aria-controls="generation-panel" tabindex="0" data-tab="generation">1. Настройки генерации</button>
               <button id="response-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="response-panel" tabindex="-1" data-tab="response">2. Контроль ответа</button>
+              <button id="reasoning-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="reasoning-panel" tabindex="-1" data-tab="reasoning">3. Разные способы рассуждения</button>
               <span class="lesson-tab-indicator" aria-hidden="true"></span>
             </div>
 
@@ -76,6 +77,45 @@
                 </div>
               </fieldset>
             </section>
+
+            <section id="reasoning-panel" class="lesson-panel" role="tabpanel" aria-labelledby="reasoning-tab" hidden>
+              <fieldset>
+                <legend>Одна задача — четыре способа рассуждения</legend>
+                <p class="hint">Выберите способ, оставьте задачу и настройки одинаковыми, затем запускайте варианты по одному или все подряд. Результаты появятся в матрице сравнения ниже.</p>
+
+                <div class="test-case" aria-labelledby="test-case-title">
+                  <div>
+                    <strong id="test-case-title">Тестовые данные для задания</strong>
+                    <p>В урне 3 красных и 2 синих шара. Наугад без возвращения извлекают 2 шара. Известно, что среди извлечённых есть хотя бы один красный шар. Какова вероятность того, что оба шара красные? Дайте ответ в виде дроби и кратко объясните расчёт.</p>
+                  </div>
+                  <button id="fill-test-case" class="secondary-button" type="button">Подставить тестовую задачу</button>
+                  <p class="hint"><b>Эталон для сверки:</b> <code>1/3</code>. Не включайте его в сам запрос — он нужен только для оценки полученных решений.</p>
+                </div>
+
+                <div class="reasoning-modes" role="radiogroup" aria-label="Способ рассуждения">
+                  <label><input type="radio" name="reasoning-approach" value="direct" checked> <span><b>1. Прямой ответ</b><small>Одна задача без добавочной инструкции о способе решения.</small></span><em>1 API-запрос</em></label>
+                  <label><input type="radio" name="reasoning-approach" value="step_by_step"> <span><b>2. «Решай пошагово»</b><small>Модель получает явную просьбу показать проверяемые этапы и итог.</small></span><em>1 API-запрос</em></label>
+                  <label><input type="radio" name="reasoning-approach" value="prompt_designer"> <span><b>3. Конструктор промпта</b><small>Сначала создаётся рабочий промпт для решения, затем он применяется к исходной задаче.</small></span><em>2 API-запроса</em></label>
+                  <label><input type="radio" name="reasoning-approach" value="expert_panel"> <span><b>4. Группа экспертов</b><small>Аналитик, инженер и критик дают отдельные блоки, после чего формируется общий вывод.</small></span><em>1 API-запрос</em></label>
+                </div>
+
+                <label class="inline-option"><input id="show-prepared-prompt" type="checkbox" checked> Показывать созданный рабочий промпт в результате третьего способа</label>
+                <p id="reasoning-mode-hint" class="hint">Прямой вариант создаёт базовую точку сравнения: оценивайте итог без дополнительного управления ходом решения.</p>
+                <div class="reasoning-actions">
+                  <button id="run-all-reasoning" class="secondary-button" type="button">Запустить все 4 способа</button>
+                  <span class="hint">Пакетный запуск сделает 5 API-вызовов: третий способ состоит из двух шагов.</span>
+                </div>
+              </fieldset>
+
+              <details class="lesson-notes">
+                <summary>Что именно сравнивать после запусков</summary>
+                <ol>
+                  <li>Совпадает ли ответ с эталоном <code>1/3</code> и не перепутано ли условие «хотя бы один красный».</li>
+                  <li>Отличаются ли формулировки, полнота расчёта и проверка допущений.</li>
+                  <li>Какой верный ответ легче проверить: обычно полезны явные шаги или проверка критиком, но вывод делайте по фактическим результатам запуска.</li>
+                </ol>
+              </details>
+            </section>
           </div>
 
           <p class="hint">Ключ DeepSeek находится только на сервере и не передаётся в браузер или журнал.</p>
@@ -88,6 +128,19 @@
           <span id="status" role="status"></span>
         </div>
         <p id="answer">Выберите режим и нажмите «Спросить DeepSeek».</p>
+      </section>
+
+      <section id="reasoning-results-card" class="card reasoning-results-card" aria-live="polite" aria-labelledby="reasoning-results-title" hidden>
+        <div class="answer-heading">
+          <h2 id="reasoning-results-title">Сравнение решений</h2>
+          <span id="reasoning-summary" role="status"></span>
+        </div>
+        <p id="reasoning-comparison" class="hint">Запустите хотя бы один способ в третьем табе.</p>
+        <div id="reasoning-results" class="reasoning-results"></div>
+        <div class="comparison-rubric">
+          <strong>Как выбрать наиболее точный результат</strong>
+          <p>Сначала исключите ответы, не совпадающие с эталоном. Среди совпавших предпочтите тот, где верно учтено условие, виден проверяемый расчёт и нет лишних неподтверждённых допущений.</p>
+        </div>
       </section>
 
       <details class="card logs-card" open>

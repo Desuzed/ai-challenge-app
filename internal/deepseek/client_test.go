@@ -69,6 +69,30 @@ func TestCompleteErrors(t *testing.T) {
 	}
 }
 
+func TestCompleteWithSystemUsesProvidedInstruction(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request completionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if len(request.Messages) != 2 || request.Messages[0].Content != "Точная учебная инструкция" || request.Messages[1].Content != "Реши задачу" {
+			t.Fatalf("unexpected messages: %#v", request.Messages)
+		}
+		if request.ResponseFormat != nil || len(request.Stop) != 0 || request.MaxTokens != 320 || request.TopP == nil || *request.TopP != 0.9 {
+			t.Fatalf("unexpected request controls: %#v", request)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Ответ"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := newClient("test-key", server.Client(), server.URL)
+	topP := 0.9
+	answer, finishReason, err := client.CompleteWithSystem(context.Background(), "Точная учебная инструкция", "Реши задачу", models.GenerationSettings{TopP: &topP, MaxTokens: 320})
+	if err != nil || answer != "Ответ" || finishReason != "stop" {
+		t.Fatalf("CompleteWithSystem() = %q, %q, %v", answer, finishReason, err)
+	}
+}
+
 func TestRequestControls(t *testing.T) {
 	_, format, stop, tokens := requestControls(models.ModeFormat, 512)
 	if format == nil || format.Type != "json_object" || len(stop) != 0 || tokens != 512 {

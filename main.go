@@ -33,15 +33,19 @@ func main() {
 	client := deepseek.NewClient(apiKey, 45*time.Second)
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
-	mux.Handle("/api/chat", http.HandlerFunc(handlers.New(client).Chat))
+	handler := handlers.New(client)
+	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
+	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
 		Handler:           securityHeaders(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// The prompt-designer mode makes two sequential API calls and can take
+		// longer than the single-response lessons.
+		WriteTimeout: 100 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	log.Printf("AI Challenge App listening on http://localhost:%s", port)
