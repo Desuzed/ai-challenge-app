@@ -79,6 +79,19 @@ func (c *Client) Complete(ctx context.Context, prompt string, mode models.Respon
 		return "", "", ErrNoAPIKey
 	}
 	system, responseFormat, stop, maxTokens := requestControls(mode, settings.MaxTokens)
+	return c.complete(ctx, system, prompt, settings, responseFormat, stop, maxTokens)
+}
+
+// CompleteWithSystem is used by the lesson that compares reasoning approaches.
+// The caller supplies only instructional text; the API key remains server-side.
+func (c *Client) CompleteWithSystem(ctx context.Context, system, prompt string, settings models.GenerationSettings) (string, string, error) {
+	if c.apiKey == "" {
+		return "", "", ErrNoAPIKey
+	}
+	return c.complete(ctx, system, prompt, settings, nil, nil, settings.MaxTokens)
+}
+
+func (c *Client) complete(ctx context.Context, system, prompt string, settings models.GenerationSettings, responseFormat *responseFormat, stop []string, maxTokens int) (string, string, error) {
 
 	body, err := json.Marshal(completionRequest{
 		Model: model,
