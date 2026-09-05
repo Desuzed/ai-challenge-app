@@ -19,7 +19,8 @@ const reasoningSummary = document.querySelector('#reasoning-summary');
 const reasoningComparison = document.querySelector('#reasoning-comparison');
 const showPreparedPrompt = document.querySelector('#show-prepared-prompt');
 
-const sampleTask = 'В урне 3 красных и 2 синих шара. Наугад без возвращения извлекают 2 шара. Известно, что среди извлечённых есть хотя бы один красный шар. Какова вероятность того, что оба шара красные? Дайте ответ в виде дроби и кратко объясните расчёт.';
+const sampleTask = 'Четыре задачи A, B, C и D нужно выполнить в четыре последовательных слота: 1, 2, 3, 4. Условия: A выполняется раньше B; C выполняется сразу после A; B выполняется сразу перед D. В каком порядке выполняются задачи? Кратко проверьте, что все условия соблюдены.';
+const sampleReference = 'A → C → B → D';
 const reasoningApproaches = {
   direct: {
     title: '1. Прямой ответ',
@@ -173,8 +174,7 @@ function resetReasoningResults() {
 }
 
 function referenceDetected(text) {
-  const normalized = text.toLowerCase().replace(/\s+/g, ' ');
-  return /1\s*\/\s*3|⅓|одн(?:а|ой) треть|0[,.]3{2,}|33[,.]3\s*%/.test(normalized);
+  return text.toUpperCase().replace(/[^ABCD]/g, '').includes('ACBD');
 }
 
 function normalizedAnswer(text) {
@@ -191,7 +191,7 @@ function createResultCard(result) {
   title.textContent = reasoningApproaches[result.approach].title;
   const badge = document.createElement('span');
   badge.className = 'result-badge';
-  badge.textContent = result.error ? 'Ошибка запуска' : referenceDetected(result.answer) ? 'Эталон 1/3 найден' : 'Сверьте с эталоном';
+  badge.textContent = result.error ? 'Ошибка запуска' : referenceDetected(result.answer) ? `Эталон ${sampleReference} найден` : 'Сверьте с эталоном';
   heading.append(title, badge);
   card.append(heading);
 
@@ -254,11 +254,11 @@ function updateReasoningComparison() {
   reasoningSummary.textContent = 'Все 4 способа готовы';
   const names = matchingReference.map((result) => reasoningApproaches[result.approach].title).join(' · ');
   if (matchingReference.length === 0) {
-    reasoningComparison.textContent = `Формулировки различаются: ${uniqueAnswers.size} уникальных текста из ${successful.length} успешных запусков. В явном виде эталон 1/3 не найден — проверьте условную вероятность вручную.`;
+    reasoningComparison.textContent = `Формулировки различаются: ${uniqueAnswers.size} уникальных текста из ${successful.length} успешных запусков. В явном виде эталон ${sampleReference} не найден — проверьте порядок и условия вручную.`;
   } else if (matchingReference.length === 1) {
-    reasoningComparison.textContent = `Формулировки различаются: ${uniqueAnswers.size} уникальных текста из ${successful.length} успешных запусков. По явной сверке с эталоном 1/3 наиболее точным оказался вариант «${names}».`;
+    reasoningComparison.textContent = `Формулировки различаются: ${uniqueAnswers.size} уникальных текста из ${successful.length} успешных запусков. По явной сверке с эталоном ${sampleReference} наиболее точным оказался вариант «${names}».`;
   } else {
-    reasoningComparison.textContent = `Формулировки различаются: ${uniqueAnswers.size} уникальных текста из ${successful.length} успешных запусков. С эталоном 1/3 совпали: ${names}. Среди них выберите наиболее точный по полноте проверяемого расчёта и учёту условия.`;
+    reasoningComparison.textContent = `Формулировки различаются: ${uniqueAnswers.size} уникальных текста из ${successful.length} успешных запусков. С эталоном ${sampleReference} совпали: ${names}. Среди них выберите наиболее точный по полноте проверяемой проверки условий.`;
   }
 }
 
