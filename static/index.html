@@ -116,6 +116,19 @@
                   <li>Какой верный ответ легче проверить: обычно полезны явные шаги или проверка критиком, но вывод делайте по фактическим результатам запуска.</li>
                 </ol>
               </details>
+
+              <section id="reasoning-results-card" class="card reasoning-results-card" aria-live="polite" aria-labelledby="reasoning-results-title" hidden>
+                <div class="answer-heading">
+                  <h2 id="reasoning-results-title">Сравнение решений</h2>
+                  <span id="reasoning-summary" role="status"></span>
+                </div>
+                <p id="reasoning-comparison" class="hint">Запустите хотя бы один способ в третьем табе.</p>
+                <div id="reasoning-results" class="reasoning-results"></div>
+                <div class="comparison-rubric">
+                  <strong>Как выбрать наиболее точный результат</strong>
+                  <p>Сначала исключите ответы, не совпадающие с эталоном. Среди совпавших предпочтите тот, где верно учтено условие, виден проверяемый расчёт и нет лишних неподтверждённых допущений.</p>
+                </div>
+              </section>
             </section>
           </div>
 
@@ -129,19 +142,6 @@
           <span id="status" role="status"></span>
         </div>
         <p id="answer">Выберите режим и нажмите «Спросить DeepSeek».</p>
-      </section>
-
-      <section id="reasoning-results-card" class="card reasoning-results-card" aria-live="polite" aria-labelledby="reasoning-results-title" hidden>
-        <div class="answer-heading">
-          <h2 id="reasoning-results-title">Сравнение решений</h2>
-          <span id="reasoning-summary" role="status"></span>
-        </div>
-        <p id="reasoning-comparison" class="hint">Запустите хотя бы один способ в третьем табе.</p>
-        <div id="reasoning-results" class="reasoning-results"></div>
-        <div class="comparison-rubric">
-          <strong>Как выбрать наиболее точный результат</strong>
-          <p>Сначала исключите ответы, не совпадающие с эталоном. Среди совпавших предпочтите тот, где верно учтено условие, виден проверяемый расчёт и нет лишних неподтверждённых допущений.</p>
-        </div>
       </section>
 
       <details class="card logs-card" open>
