@@ -175,7 +175,7 @@ func TestReasoningPromptDesignerUsesGeneratedPrompt(t *testing.T) {
 	if client.reasoningSettings[0].Temperature == nil || *client.reasoningSettings[0].Temperature != 0.2 || client.reasoningSettings[0].TopP != nil || client.reasoningSettings[0].MaxTokens != 720 {
 		t.Fatalf("designer settings = %#v", client.reasoningSettings[0])
 	}
-	if client.reasoningSettings[1].TopP == nil || *client.reasoningSettings[1].TopP != 0.9 || client.reasoningSettings[1].MaxTokens != 256 {
+	if client.reasoningSettings[1].TopP == nil || *client.reasoningSettings[1].TopP != 0.9 || client.reasoningSettings[1].MaxTokens != 8192 {
 		t.Fatalf("solver settings = %#v", client.reasoningSettings[1])
 	}
 

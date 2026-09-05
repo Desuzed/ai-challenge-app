@@ -148,6 +148,9 @@ func (h *Handler) Reasoning(w http.ResponseWriter, r *http.Request) {
 		writeReasoningError(w, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
+	// Lesson 3 compares reasoning styles, so the final answer must not be
+	// truncated by the lesson 1 slider. Keep the API's maximum as a safety cap.
+	input.Settings.MaxTokens = 8192
 
 	started := time.Now()
 	debug := models.ReasoningDebugInfo{
