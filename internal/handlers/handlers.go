@@ -6,18 +6,21 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/models"
+	"ai-challenge-app/internal/openrouter"
 )
 
 const (
-	maxRequestBytes  = 128 << 10
-	defaultTokens    = 512
-	reasoningTimeout = 95 * time.Second
+	maxRequestBytes      = 128 << 10
+	defaultTokens        = 512
+	reasoningTimeout     = 95 * time.Second
+	modelVersionsTimeout = 4 * time.Minute
 )
 
 type completer interface {
@@ -28,14 +31,219 @@ type reasoningCompleter interface {
 	CompleteWithSystem(context.Context, string, string, models.GenerationSettings) (string, string, error)
 }
 
-type Handler struct {
-	client          completer
-	reasoningClient reasoningCompleter
+type modelVersionsCompleter interface {
+	ListModels(context.Context) ([]string, error)
+	CompleteModel(context.Context, string, string, string, models.GenerationSettings) (models.ModelCompletion, error)
 }
+
+type openRouterCompleter interface {
+	DiscoverWeakFreeModel(context.Context) (openrouter.Candidate, error)
+	Complete(context.Context, openrouter.Candidate, string, string) (models.ModelCompletion, error)
+}
+
+type Handler struct {
+	client              completer
+	reasoningClient     reasoningCompleter
+	modelVersionsClient modelVersionsCompleter
+	openRouterClient    openRouterCompleter
+}
+
+func (h *Handler) SetOpenRouterClient(client openRouterCompleter) { h.openRouterClient = client }
 
 func New(client completer) *Handler {
 	reasoningClient, _ := client.(reasoningCompleter)
-	return &Handler{client: client, reasoningClient: reasoningClient}
+	modelVersionsClient, _ := client.(modelVersionsCompleter)
+	return &Handler{client: client, reasoningClient: reasoningClient, modelVersionsClient: modelVersionsClient}
+}
+
+const modelVersionsPrompt = `Ты — руководитель разбора инцидентов мобильного маркетплейса. Проведи технический разбор на основании только приведённых данных.
+
+Контекст:
+- Маркетплейс работает на iOS и Android.
+- Покупатель оформляет заказ в приложении и оплачивает его банковской картой.
+- В 14:00 на 20% Android-пользователей выпустили версию 8.14.
+- В 14:18 поддержка получила первые жалобы на двойные списания.
+- В 15:05 rollout остановили.
+- В 15:20 версию откатили через механизм обязательного обновления конфигурации.
+- После отката новые случаи продолжались ещё около двух часов.
+
+Изменения в версии 8.14:
+- экран оплаты перевели на новую сетевую библиотеку;
+- таймаут запроса уменьшили с 30 до 8 секунд;
+- при таймауте приложение автоматически повторяет запрос;
+- кнопка «Оплатить» блокируется после первого нажатия;
+- формат тела запроса не изменился;
+- мобильное приложение генерирует idempotency key при открытии экрана оплаты;
+- новая библиотека при повторной отправке заново запускает interceptor, добавляющий idempotency key.
+
+Наблюдения:
+- 96% двойных списаний произошли при мобильном интернете.
+- На сервере пары платежей отличаются на 7–12 секунд.
+- У пар одинаковые user_id, cart_id и сумма.
+- Idempotency key у двух платежей различается.
+- Первый запрос часто завершается на клиенте таймаутом, но получает HTTP 200 на сервере.
+- Второй запрос также получает HTTP 200.
+- Платёжный провайдер считает эти запросы независимыми.
+- На iOS роста двойных списаний нет.
+- После отката случаи продолжались только у пользователей, уже открывших экран оплаты в версии 8.14.
+- Серверная команда считает причиной двойное нажатие на кнопку.
+- Мобильная команда считает причиной нестабильный интернет.
+
+Подготовь разбор инцидента.
+
+Обязательно:
+1. Отдели факты от предположений.
+2. Назови наиболее вероятную первопричину и причинную цепочку.
+3. Объясни, почему блокировка кнопки не защитила от проблемы.
+4. Объясни, почему инцидент продолжался после отката.
+5. Оцени версии серверной и мобильной команд.
+6. Предложи немедленные меры остановки ущерба.
+7. Предложи устойчивое исправление на клиенте и сервере.
+8. Опиши, как найти всех пострадавших и безопасно провести возвраты.
+9. Предложи минимум пять автоматических проверок.
+10. Укажи, каких данных не хватает для окончательного доказательства.
+
+Не придумывай отсутствующие факты. Для каждого важного вывода укажи уровень уверенности: высокий, средний или низкий.`
+
+const modelVersionsSystem = "Отвечай на русском. Строго соблюдай требования пользователя и не добавляй отсутствующие факты."
+
+// ModelVersions compares the fixed, full lesson prompt across officially
+// discovered models. Coder is never called unless /models confirms it.
+func (h *Handler) ModelVersions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeModelVersionsError(w, http.StatusMethodNotAllowed, "Используйте POST-запрос.")
+		return
+	}
+	if h.modelVersionsClient == nil {
+		writeModelVersionsError(w, http.StatusServiceUnavailable, "Сравнение версий моделей сейчас недоступно.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), modelVersionsTimeout)
+	defer cancel()
+	catalog, err := h.modelVersionsClient.ListModels(ctx)
+	if err != nil {
+		status, message := errorResponse(err)
+		writeModelVersionsError(w, status, message)
+		return
+	}
+	sort.Strings(catalog)
+	available := make(map[string]bool, len(catalog))
+	for _, id := range catalog {
+		available[id] = true
+	}
+	runs := []models.ModelVersionRun{
+		h.runModelVersion(ctx, "deepseek-v4-flash", "средний", available["deepseek-v4-flash"]),
+		h.runModelVersion(ctx, "deepseek-v4-pro", "сильный", available["deepseek-v4-pro"]),
+	}
+	openRouterNote := "OpenRouter не настроен: задайте OPENROUTER_API_KEY в окружении сервера."
+	if h.openRouterClient != nil {
+		candidate, discoverErr := h.openRouterClient.DiscoverWeakFreeModel(ctx)
+		if discoverErr != nil {
+			runs = append(runs, models.ModelVersionRun{Provider: "OpenRouter", Model: "бесплатная слабая модель", Level: "слабый", CostNote: "Не удалось подтвердить бесплатную слабую модель через каталог OpenRouter; запуск не выполнялся."})
+			openRouterNote = "OpenRouter: каталог не подтвердил подходящую бесплатную слабую текстовую модель."
+		} else {
+			runs = append(runs, h.runOpenRouterModel(ctx, candidate))
+			openRouterNote = "OpenRouter: выбрана из текущего каталога бесплатная слабая модель " + candidate.ID + "."
+		}
+	}
+	writeJSON(w, http.StatusOK, models.ModelVersionsResponse{
+		Prompt: modelVersionsPrompt, Catalog: catalog,
+		CatalogNote: "DeepSeek-каталог получен безопасным GET /models с тем же серверным ключом. " + openRouterNote,
+		Runs:        runs,
+		Sources:     []models.SourceLink{{Title: "DeepSeek: список моделей", URL: "https://api-docs.deepseek.com/api/list-models"}, {Title: "DeepSeek: модели и цены", URL: "https://api-docs.deepseek.com/quick_start/pricing"}, {Title: "OpenRouter: каталог моделей", URL: "https://openrouter.ai/docs/api/api-reference/models/get-models"}, {Title: "OpenRouter: бесплатные варианты", URL: "https://openrouter.ai/docs/guides/routing/model-variants/free"}},
+	})
+}
+
+func (h *Handler) runModelVersion(ctx context.Context, name, level string, supported bool) models.ModelVersionRun {
+	run := models.ModelVersionRun{Provider: "DeepSeek", Model: name, Level: level, Supported: supported}
+	if !supported {
+		run.CostNote = "Стоимость неизвестна: идентификатор не выдан API-каталогом, запуск не выполнялся."
+		return run
+	}
+	started := time.Now()
+	result, err := h.modelVersionsClient.CompleteModel(ctx, name, modelVersionsSystem, modelVersionsPrompt, models.GenerationSettings{MaxTokens: 4096})
+	run.DurationMS = time.Since(started).Milliseconds()
+	if err != nil {
+		run.Error = "Запуск не удался: " + modelVersionError(err)
+		run.CostNote = "Стоимость неизвестна: API не вернул успешный ответ и usage."
+		return run
+	}
+	run.Answer, run.FinishReason, run.Usage = result.Answer, result.FinishReason, result.Usage
+	run.CostUSD, run.CostNote = estimateCost(name, result.Usage, time.Now().UTC())
+	return run
+}
+
+func (h *Handler) runOpenRouterModel(ctx context.Context, candidate openrouter.Candidate) models.ModelVersionRun {
+	run := models.ModelVersionRun{Provider: "OpenRouter", Model: candidate.ID, Level: "слабый", Supported: true}
+	started := time.Now()
+	result, err := h.openRouterClient.Complete(ctx, candidate, modelVersionsSystem, modelVersionsPrompt)
+	run.DurationMS = time.Since(started).Milliseconds()
+	if err != nil {
+		run.Error = "Запуск не удался: " + openRouterError(err)
+		run.CostNote = "Стоимость неизвестна: API не вернул успешный ответ и usage."
+		return run
+	}
+	run.Answer, run.FinishReason, run.Usage = result.Answer, result.FinishReason, result.Usage
+	free := 0.0
+	run.CostUSD = &free
+	run.CostNote = "Бесплатная модель: каталог OpenRouter сообщил нулевые цены на вход и выход для выбранного идентификатора."
+	return run
+}
+
+func openRouterError(err error) string {
+	var apiErr *openrouter.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Error()
+	}
+	if errors.Is(err, openrouter.ErrNoAPIKey) {
+		return "ключ OpenRouter не настроен"
+	}
+	return "ошибка OpenRouter или сети"
+}
+
+func modelVersionError(err error) string {
+	switch {
+	case errors.Is(err, deepseek.ErrTimeout):
+		return "ответ превысил лимит ожидания 120 секунд"
+	case errors.Is(err, deepseek.ErrRateLimited):
+		return "лимит запросов DeepSeek"
+	case errors.Is(err, deepseek.ErrUnauthorized):
+		return "ключ отклонён DeepSeek"
+	default:
+		return "ошибка DeepSeek или сети"
+	}
+}
+
+// estimateCost uses the official 2026-08-16 peak/off-peak public rates. Cache
+// accounting is only exact when the API reports its hit/miss counters.
+func estimateCost(model string, usage models.ModelUsage, at time.Time) (*float64, string) {
+	if usage.TotalTokens == 0 {
+		return nil, "Стоимость неизвестна: API не вернул usage."
+	}
+	var cacheHit, cacheMiss, output float64
+	if model == "deepseek-v4-flash" {
+		cacheHit, cacheMiss, output = .007, .22, .66
+	} else if model == "deepseek-v4-pro" {
+		cacheHit, cacheMiss, output = .022, .66, 1.98
+	} else {
+		return nil, "Стоимость неизвестна: в официальной таблице нет цены этой модели."
+	}
+	hour := at.Hour()
+	peak := (hour >= 1 && hour < 4) || (hour >= 6 && hour < 10)
+	if peak {
+		cacheHit *= 2
+		cacheMiss *= 2
+		output *= 2
+	}
+	miss := usage.CacheMissTokens
+	if miss == 0 && usage.InputTokens > 0 {
+		miss = usage.InputTokens
+	}
+	hit := usage.CacheHitTokens
+	cost := float64(hit)/1_000_000*cacheHit + float64(miss)/1_000_000*cacheMiss + float64(usage.OutputTokens)/1_000_000*output
+	note := "Оценка USD по официальным " + map[bool]string{true: "пиковым", false: "непиковым"}[peak] + " тарифам на момент запуска; вход без cache-счётчиков посчитан как cache miss."
+	return &cost, note
 }
 
 func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
@@ -293,6 +501,12 @@ func writeReasoningError(w http.ResponseWriter, status int, message string, debu
 		Debug *models.ReasoningDebugInfo `json:"debug,omitempty"`
 	}{Error: message, Debug: debug}
 	writeJSON(w, status, response)
+}
+
+func writeModelVersionsError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, struct {
+		Error string `json:"error"`
+	}{Error: message})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
