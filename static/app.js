@@ -24,6 +24,14 @@ const temperatureResultsCard = document.querySelector('#temperature-results-card
 const temperatureResults = document.querySelector('#temperature-results');
 const temperatureSummary = document.querySelector('#temperature-summary');
 const temperatureComparison = document.querySelector('#temperature-comparison');
+const runModelVersions = document.querySelector('#run-model-versions');
+const modelVersionsStatus = document.querySelector('#model-versions-status');
+const modelVersionsResults = document.querySelector('#model-versions-results');
+const modelVersionsCatalog = document.querySelector('#model-versions-catalog');
+const modelVersionsCards = document.querySelector('#model-versions-cards');
+const modelVersionsAnalysis = document.querySelector('#model-versions-analysis');
+const modelVersionsPrompt = document.querySelector('#model-versions-prompt');
+const modelVersionsSources = document.querySelector('#model-versions-sources');
 
 const sampleTask = 'Четыре задачи A, B, C и D нужно выполнить в четыре последовательных слота: 1, 2, 3, 4. Условия: A выполняется раньше B; C выполняется сразу после A; B выполняется сразу перед D. В каком порядке выполняются задачи? Кратко проверьте, что все условия соблюдены.';
 const sampleReference = 'A → C → B → D';
@@ -65,6 +73,10 @@ function updateSubmitLabel() {
   }
   if (activeTabName() === 'temperature') {
     submit.textContent = 'Запустить сравнение температур';
+    return;
+  }
+  if (activeTabName() === 'model-versions') {
+    submit.textContent = 'Сравнить Flash, Pro и слабую модель';
     return;
   }
   submit.textContent = 'Спросить DeepSeek';
@@ -187,6 +199,109 @@ function setReasoningBusy(isBusy) {
 function setTemperatureBusy(isBusy) {
   submit.disabled = isBusy;
   runTemperatureComparisonButton.disabled = isBusy;
+}
+
+function formatCost(cost) {
+  return typeof cost === 'number' ? `$${cost.toFixed(6)}` : 'неизвестна';
+}
+
+function createModelVersionCard(run) {
+  const card = document.createElement('article');
+  card.className = `model-version-card${run.supported ? '' : ' unsupported'}`;
+  const title = document.createElement('h3');
+  title.textContent = run.model;
+  const provider = document.createElement('p');
+  provider.className = 'model-version-meta';
+  provider.textContent = `Провайдер: ${run.provider || 'не указан'}`;
+  const level = document.createElement('p');
+  level.textContent = `Уровень: ${run.level}`;
+  const state = document.createElement('p');
+  state.className = 'model-version-meta';
+  state.textContent = run.supported ? 'Поддержка подтверждена API-каталогом.' : 'Не поддерживается: точный идентификатор отсутствует в API-каталоге; вызов не делался.';
+  card.append(title, provider, level, state);
+  if (run.error) { const error = document.createElement('p'); error.className = 'error'; error.textContent = run.error; card.append(error); }
+  if (run.answer) { const label = document.createElement('strong'); label.textContent = 'Ответ'; const body = document.createElement('p'); body.className = 'model-version-answer'; body.textContent = run.answer; card.append(label, body); }
+  const meta = document.createElement('p');
+  meta.className = 'model-version-meta';
+  meta.textContent = `Время: ${run.durationMs ?? '—'} мс · вход: ${run.usage?.inputTokens ?? 0} · выход: ${run.usage?.outputTokens ?? 0} · всего: ${run.usage?.totalTokens ?? 0} токенов · стоимость: ${formatCost(run.costUsd)}.`;
+  const note = document.createElement('p'); note.className = 'model-version-meta'; note.textContent = run.costNote;
+  card.append(meta, note);
+  return card;
+}
+
+function updateModelVersionsAnalysis(runs) {
+  const completed = runs.filter((run) => run.answer && !run.error);
+  if (completed.length < 2) { modelVersionsAnalysis.textContent = 'Полное сравнение пока невозможно: проверьте статус Flash и Pro выше. Неуспешный вызов не трактуется как оценка качества модели.'; return; }
+  const fastest = completed.reduce((best, run) => run.durationMs < best.durationMs ? run : best);
+  const leanest = completed.reduce((best, run) => run.usage.totalTokens < best.usage.totalTokens ? run : best);
+  const costly = completed.filter((run) => typeof run.costUsd === 'number').sort((a, b) => a.costUsd - b.costUsd);
+  const economics = costly.length === completed.length ? `По оценке стоимости дешевле ${costly[0].model} (${formatCost(costly[0].costUsd)}), дороже ${costly[costly.length - 1].model} (${formatCost(costly[costly.length - 1].costUsd)}).` : 'Точную экономику сравнить нельзя: хотя бы для одного запуска цена или usage неизвестны.';
+  const rubric = [
+    /факт.*предполож|предполож.*факт/i,
+    /первопричин|причинн.*цепоч/i,
+    /кнопк.*оплат|блокировк/i,
+    /откат/i,
+    /серверн.*команд[\s\S]{0,500}мобильн.*команд|мобильн.*команд[\s\S]{0,500}серверн.*команд/i,
+    /немедлен|остановк.*ущерб/i,
+    /исправлен.*клиент[\s\S]{0,500}сервер|исправлен.*сервер[\s\S]{0,500}клиент/i,
+    /возврат|пострадавш/i,
+    /автоматическ.*провер|автотест|тест-кейс/i,
+    /не хватает.*данн|недостающ.*данн/i,
+  ];
+  const coverage = completed.map((run) => {
+    const requirements = rubric.reduce((total, pattern) => total + Number(pattern.test(run.answer)), 0);
+    const confidence = /высок[а-я]* уверенност|средн[а-я]* уверенност|низк[а-я]* уверенност/i.test(run.answer);
+    const correctnessChecks = [
+      /idempotency.{0,120}(измен|разн|нов|перегенер|interceptor)|interceptor.{0,120}idempotency/i,
+      /таймаут.{0,180}(повтор|ретра|retry)|(?:повтор|ретра|retry).{0,180}таймаут/i,
+      /перв.{0,100}(200|успеш)|200.{0,120}перв.{0,100}(запрос|плат)/i,
+      /кнопк.{0,180}(неs*защит|неs*причин|автоматическ.{0,80}(повтор|ретра))|автоматическ.{0,100}(повтор|ретра).{0,180}кнопк/i,
+      /откат.{0,180}(открыт.{0,80}экран|уже.{0,80}экран|in.?flight|стар.{0,80}верси)|(?:открыт.{0,80}экран|уже.{0,80}экран).{0,180}откат/i,
+      /сервер.{0,180}(идемпотент|дедуплик|уникальн).{0,180}(key|ключ|платеж)|(?:идемпотент|дедуплик|уникальн).{0,180}сервер/i,
+      /клиент.{0,180}(сохран|переиспольз|стабил).{0,180}(key|ключ)|(?:сохран|переиспольз|стабил).{0,180}(key|ключ).{0,180}клиент/i,
+      /(?:поиск|найти).{0,180}(пострадав|дубл|двойн).{0,180}(возврат|refund)|(?:возврат|refund).{0,180}(пострадав|дубл|двойн)/i,
+    ];
+    const correct = correctnessChecks.reduce((total, pattern) => total + Number(pattern.test(run.answer)), 0);
+    const wrongRootCause = /первопричин[а-я\s:—-]{0,100}двойн.{0,80}(нажат|клик)/i.test(run.answer);
+    const score = correct * 3 + requirements + Number(confidence) - (wrongRootCause ? 5 : 0);
+    return { model: run.model, score, requirements, confidence, correct, wrongRootCause };
+  });
+  const bestScore = Math.max(...coverage.map((item) => item.score));
+  const leaders = coverage.filter((item) => item.score === bestScore);
+  const quality = coverage.map((item) => `${item.model}: корректность причинной цепочки ${item.correct}/8, покрытие требований ${item.requirements}/10${item.confidence ? ', уверенность указана' : ', уровни уверенности не найдены'}${item.wrongRootCause ? ', штраф за неверную первопричину «двойное нажатие»' : ''}; итог ${item.score}`).join('; ');
+  const conclusion = leaders.length === 1
+    ? `По качеству лидирует ${leaders[0].model}: ${leaders[0].score} баллов по технической рубрике инцидента.`
+    : `По качеству ничья: ${leaders.map((item) => item.model).join(' и ')} набрали по ${bestScore} баллов по технической рубрике инцидента.`;
+  const list = document.createElement('ul');
+  list.className = 'model-version-conclusions';
+  const lines = [
+    `Скорость: быстрее ответил ${fastest.model} (${fastest.durationMs} мс).`,
+    `Ресурсоёмкость: меньше всего токенов использовал ${leanest.model} (${leanest.usage.totalTokens}).`,
+    economics,
+    `Качество: ${quality}.`,
+    `Вывод: ${conclusion} Корректность причинной цепочки имеет тройной вес по отношению к формальному покрытию разделов.`,
+  ];
+  list.replaceChildren(...lines.map((line) => { const item = document.createElement('li'); item.textContent = line; return item; }));
+  modelVersionsAnalysis.replaceChildren(list);
+}
+
+async function runModelVersionsComparison() {
+  runModelVersions.disabled = true; submit.disabled = true;
+  modelVersionsStatus.textContent = 'Проверяю каталог и запускаю доступные модели…';
+  requestLog.textContent = 'БРАУЗЕР → BACKEND\nPOST /api/model-versions\n\nСервер проверяет каталог моделей; API-ключ не передаётся в браузер.';
+  try {
+    const response = await fetch('/api/model-versions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: '{}' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Не удалось сравнить версии моделей.');
+    modelVersionsResults.hidden = false;
+    modelVersionsCatalog.textContent = `${payload.catalogNote} Каталог: ${payload.catalog.length ? payload.catalog.join(', ') : 'пустой'}.`;
+    modelVersionsCards.replaceChildren(...payload.runs.map(createModelVersionCard));
+    modelVersionsPrompt.textContent = payload.prompt;
+    modelVersionsSources.replaceChildren(...payload.sources.map((source) => { const item = document.createElement('li'); const link = document.createElement('a'); link.href = source.url; link.textContent = source.title; link.target = '_blank'; link.rel = 'noopener noreferrer'; item.append(link); return item; }));
+    updateModelVersionsAnalysis(payload.runs);
+    requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON({ catalog: payload.catalog, runs: payload.runs.map((run) => ({ model: run.model, supported: run.supported, durationMs: run.durationMs, usage: run.usage, costUsd: run.costUsd, error: run.error })) })}`;
+    modelVersionsStatus.textContent = 'Сравнение завершено';
+  } catch (error) { modelVersionsStatus.textContent = readableFetchError(error, 'Ошибка сравнения.'); }
 }
 
 function resetReasoningResults() {
@@ -529,6 +644,7 @@ fillTemperatureTask.addEventListener('click', () => {
 
 runAllReasoning.addEventListener('click', runAllReasoningApproaches);
 runTemperatureComparisonButton.addEventListener('click', runTemperatureComparison);
+runModelVersions.addEventListener('click', runModelVersionsComparison);
 showPreparedPrompt.addEventListener('change', updateReasoningComparison);
 promptInput.addEventListener('input', () => {
   if (reasoningTask && promptInput.value.trim() !== reasoningTask) resetReasoningResults();
@@ -543,6 +659,10 @@ form.addEventListener('submit', async (event) => {
   }
   if (activeTabName() === 'reasoning') {
     await runSelectedReasoning();
+    return;
+  }
+  if (activeTabName() === 'model-versions') {
+    await runModelVersionsComparison();
     return;
   }
 
