@@ -12,14 +12,15 @@ input, textarea, button { font: inherit; }
 textarea { width: 100%; padding: 11px 12px; border: 1px solid #b9c7d8; border-radius: 8px; background: #fff; resize: vertical; }
 textarea:focus, input:focus { outline: 3px solid #bdd1ff; border-color: #4169e1; }
 .lesson-tabs { display: grid; gap: 16px; }
-.lesson-tablist { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid #d7e1ef; }
+.lesson-tablist { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid #d7e1ef; }
 .lesson-tab { z-index: 1; margin: 0; padding: 0 8px 12px; border: 0; border-radius: 0; background: transparent; color: #526174; font-size: .94rem; font-weight: 650; text-align: center; }
 .lesson-tab:hover { background: transparent; color: #395577; }
 .lesson-tab:focus-visible { outline: 3px solid #bdd1ff; outline-offset: 2px; }
 .lesson-tab[aria-selected="true"] { color: #315edb; }
-.lesson-tab-indicator { position: absolute; bottom: -1px; left: 0; width: 33.333%; height: 3px; border-radius: 3px 3px 0 0; background: #4169e1; transition: transform .24s cubic-bezier(.2, .8, .2, 1); }
+.lesson-tab-indicator { position: absolute; bottom: -1px; left: 0; width: 25%; height: 3px; border-radius: 3px 3px 0 0; background: #4169e1; transition: transform .24s cubic-bezier(.2, .8, .2, 1); }
 .lesson-tablist[data-active-tab="response"] .lesson-tab-indicator { transform: translateX(100%); }
 .lesson-tablist[data-active-tab="reasoning"] .lesson-tab-indicator { transform: translateX(200%); }
+.lesson-tablist[data-active-tab="temperature"] .lesson-tab-indicator { transform: translateX(300%); }
 .lesson-panel { display: grid; gap: 12px; }
 .lesson-panel[hidden] { display: none; }
 fieldset { margin: 4px 0 0; padding: 16px; border: 1px solid #d7e1ef; border-radius: 10px; }
@@ -49,6 +50,18 @@ legend { padding: 0 6px; }
 .secondary-button:hover { background: #edf3ff; }
 .inline-option { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-weight: 500; }
 .reasoning-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 14px; }
+.temperature-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.temperature-settings article { padding: 12px 14px; border: 1px solid #d7e1ef; border-radius: 10px; background: #fbfdff; }
+.temperature-settings code { color: #315edb; font-weight: 700; }
+.temperature-settings p { margin: 8px 0 0; color: #526174; font-size: .86rem; line-height: 1.4; }
+.temperature-guidance { display: grid; gap: 14px; margin-top: 4px; padding: 16px; border: 1px solid #cbd9ff; border-radius: 10px; background: #f6f8ff; }
+.temperature-guidance h3 { margin: 0 0 4px; font-size: 1rem; color: #28457d; }
+.temperature-guidance-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.temperature-guidance-grid article { display: grid; align-content: start; gap: 9px; padding: 13px; border: 1px solid #d7e1ef; border-radius: 9px; background: #fff; color: #334155; font-size: .87rem; line-height: 1.45; }
+.temperature-guidance-grid strong { color: #28457d; }
+.temperature-guidance-grid p { margin: 0; }
+.temperature-example { font-style: italic; }
+.temperature-caveat { padding-top: 2px; }
 .lesson-notes { margin-top: 4px; color: #526174; }
 .lesson-notes ol { display: grid; gap: 8px; margin: 12px 0 0; padding-left: 22px; line-height: 1.45; }
 .range-row { display: grid; grid-template-columns: 190px 1fr; align-items: center; gap: 8px 14px; margin-top: 12px; }
@@ -62,13 +75,21 @@ button:hover { background: #234cb9; } button:disabled { cursor: wait; opacity: .
 #answer { margin: 18px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
 .reasoning-results-card { display: grid; gap: 16px; }
 .reasoning-results { display: grid; gap: 14px; }
+.temperature-results-card { display: grid; gap: 16px; }
+.temperature-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.reasoning-results-card[hidden], .temperature-results-card[hidden] { display: none; }
 .reasoning-result { padding: 16px; border: 1px solid #d7e1ef; border-radius: 10px; background: #fbfdff; }
 .reasoning-result-error { border-color: #f5b5b1; background: #fff8f7; }
+.temperature-result { display: grid; align-content: start; padding: 14px; border: 1px solid #d7e1ef; border-radius: 10px; background: #fbfdff; }
+.temperature-result-error { border-color: #f5b5b1; background: #fff8f7; }
 .reasoning-result-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .reasoning-result-heading h3 { margin: 0; font-size: 1rem; }
+.temperature-result-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+.temperature-result-heading h3 { margin: 0; color: #28457d; font-size: .94rem; }
 .result-badge { padding: 4px 8px; border-radius: 999px; background: #eaf0ff; color: #315edb; font-size: .76rem; font-weight: 700; white-space: nowrap; }
 .reasoning-result-error .result-badge { background: #fee4e2; color: #b42318; }
 .reasoning-answer { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.temperature-answer { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .result-metadata { margin: 12px 0 0; color: #526174; font-size: .8rem; }
 .prepared-prompt { margin-bottom: 14px; padding: 10px 12px; border: 1px solid #d7e1ef; border-radius: 8px; background: #fff; }
 .prepared-prompt pre { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #334155; font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -78,4 +99,5 @@ button:hover { background: #234cb9; } button:disabled { cursor: wait; opacity: .
 #request-log { margin: 16px 0 0; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; background: #111827; color: #d1fae5; font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .error { color: #b42318; }
 @media (prefers-reduced-motion: reduce) { .lesson-tab-indicator { transition: none; } }
-@media (max-width: 560px) { .container { margin: 20px auto; } .card { padding: 20px; } .lesson-tab { padding-inline: 4px; font-size: .8rem; } .range-row { grid-template-columns: 1fr; } .range-row small { grid-column: 1; } .reasoning-modes label { grid-template-columns: auto minmax(0, 1fr); } .reasoning-modes em { grid-column: 2; justify-self: start; } .reasoning-result-heading { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 700px) { .temperature-settings, .temperature-guidance-grid, .temperature-results { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .container { margin: 20px auto; } .card { padding: 20px; } .lesson-tab { padding-inline: 4px; font-size: .8rem; line-height: 1.15; overflow-wrap: anywhere; } .range-row { grid-template-columns: 1fr; } .range-row small { grid-column: 1; } .reasoning-modes label { grid-template-columns: auto minmax(0, 1fr); } .reasoning-modes em { grid-column: 2; justify-self: start; } .reasoning-result-heading, .temperature-result-heading { align-items: flex-start; flex-direction: column; } }

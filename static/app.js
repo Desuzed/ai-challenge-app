@@ -12,15 +12,23 @@ const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
 const tabPanels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
 const fillTestCase = document.querySelector('#fill-test-case');
 const runAllReasoning = document.querySelector('#run-all-reasoning');
+const fillTemperatureTask = document.querySelector('#fill-temperature-task');
+const runTemperatureComparisonButton = document.querySelector('#run-temperature-comparison');
 const reasoningModeHint = document.querySelector('#reasoning-mode-hint');
 const reasoningResultsCard = document.querySelector('#reasoning-results-card');
 const reasoningResults = document.querySelector('#reasoning-results');
 const reasoningSummary = document.querySelector('#reasoning-summary');
 const reasoningComparison = document.querySelector('#reasoning-comparison');
 const showPreparedPrompt = document.querySelector('#show-prepared-prompt');
+const temperatureResultsCard = document.querySelector('#temperature-results-card');
+const temperatureResults = document.querySelector('#temperature-results');
+const temperatureSummary = document.querySelector('#temperature-summary');
+const temperatureComparison = document.querySelector('#temperature-comparison');
 
 const sampleTask = 'Четыре задачи A, B, C и D нужно выполнить в четыре последовательных слота: 1, 2, 3, 4. Условия: A выполняется раньше B; C выполняется сразу после A; B выполняется сразу перед D. В каком порядке выполняются задачи? Кратко проверьте, что все условия соблюдены.';
 const sampleReference = 'A → C → B → D';
+const sampleTemperatureTask = 'Объясни школьнику в 2–3 предложениях, почему после дождя появляется радуга. Используй простой русский язык.';
+const temperatureValues = [0, 0.7, 1.2, 1.8];
 const reasoningApproaches = {
   direct: {
     title: '1. Прямой ответ',
@@ -41,7 +49,9 @@ const reasoningApproaches = {
 };
 const reasoningOrder = Object.keys(reasoningApproaches);
 const reasoningRuns = new Map();
+const temperatureRuns = new Map();
 let reasoningTask = '';
+let temperatureTask = '';
 let savedMaxTokens = maxTokens.value;
 
 function activeTabName() {
@@ -49,7 +59,15 @@ function activeTabName() {
 }
 
 function updateSubmitLabel() {
-  submit.textContent = activeTabName() === 'reasoning' ? 'Запустить выбранный способ' : 'Спросить DeepSeek';
+  if (activeTabName() === 'reasoning') {
+    submit.textContent = 'Запустить выбранный способ';
+    return;
+  }
+  if (activeTabName() === 'temperature') {
+    submit.textContent = 'Запустить сравнение температур';
+    return;
+  }
+  submit.textContent = 'Спросить DeepSeek';
 }
 
 function activateTab(tab, focus = false) {
@@ -166,11 +184,23 @@ function setReasoningBusy(isBusy) {
   runAllReasoning.disabled = isBusy;
 }
 
+function setTemperatureBusy(isBusy) {
+  submit.disabled = isBusy;
+  runTemperatureComparisonButton.disabled = isBusy;
+}
+
 function resetReasoningResults() {
   reasoningRuns.clear();
   reasoningTask = '';
   reasoningResultsCard.hidden = true;
   reasoningResults.replaceChildren();
+}
+
+function resetTemperatureResults() {
+  temperatureRuns.clear();
+  temperatureTask = '';
+  temperatureResultsCard.hidden = true;
+  temperatureResults.replaceChildren();
 }
 
 function referenceDetected(text) {
@@ -179,6 +209,142 @@ function referenceDetected(text) {
 
 function normalizedAnswer(text) {
   return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function temperatureLabel(value) {
+  return `temperature = ${value}`;
+}
+
+function createTemperatureResultCard(result) {
+  const card = document.createElement('article');
+  card.className = `temperature-result${result.error ? ' temperature-result-error' : ''}`;
+
+  const heading = document.createElement('div');
+  heading.className = 'temperature-result-heading';
+  const title = document.createElement('h3');
+  title.textContent = temperatureLabel(result.temperature);
+  const badge = document.createElement('span');
+  badge.className = 'result-badge';
+  badge.textContent = result.error ? 'Ошибка запуска' : 'Ответ получен';
+  heading.append(title, badge);
+  card.append(heading);
+
+  if (result.error) {
+    const message = document.createElement('p');
+    message.className = 'error';
+    message.textContent = result.error;
+    card.append(message);
+    return card;
+  }
+
+  const answerLabel = document.createElement('strong');
+  answerLabel.textContent = 'Ответ модели';
+  const answerText = document.createElement('p');
+  answerText.className = 'temperature-answer';
+  answerText.textContent = result.answer;
+  const metadata = document.createElement('p');
+  metadata.className = 'result-metadata';
+  const settings = result.debug?.settings || {};
+  const actualTemperature = typeof settings.temperature === 'number' ? settings.temperature : result.temperature;
+  const maxTokensValue = settings.maxTokens || 'не указан';
+  const finishReason = result.debug?.finishReason || 'не указана';
+  const duration = result.debug?.durationMs;
+  metadata.textContent = `${temperatureLabel(actualTemperature)} · max_tokens: ${maxTokensValue}${duration === undefined ? '' : ` · ${duration} мс`} · причина остановки: ${finishReason}`;
+  card.append(answerLabel, answerText, metadata);
+  return card;
+}
+
+function updateTemperatureComparison() {
+  const results = temperatureValues.map((value) => temperatureRuns.get(value)).filter(Boolean);
+  if (results.length === 0) {
+    temperatureResultsCard.hidden = true;
+    return;
+  }
+
+  temperatureResultsCard.hidden = false;
+  temperatureResults.replaceChildren(...temperatureValues
+    .map((value) => temperatureRuns.get(value))
+    .filter(Boolean)
+    .map(createTemperatureResultCard));
+
+  const successful = results.filter((result) => !result.error && result.answer);
+  const uniqueAnswers = new Set(successful.map((result) => normalizedAnswer(result.answer)));
+  const notRun = temperatureValues.length - results.length;
+
+  if (notRun > 0) {
+    temperatureSummary.textContent = `${results.length} из ${temperatureValues.length} запусков готово`;
+    temperatureComparison.textContent = `Получено ${successful.length} ответ(а/ов), из них ${uniqueAnswers.size} текстово различающихся. Дождитесь ещё ${notRun} запуск(а/ов), чтобы сравнить все значения.`;
+    return;
+  }
+
+  temperatureSummary.textContent = `Все ${temperatureValues.length} температуры готовы`;
+  temperatureComparison.textContent = `Получено ${successful.length} успешных ответ(а/ов) и ${uniqueAnswers.size} текстово различающихся формулировок. Сверьте точность с фактами из задания, затем оцените креативность и разнообразие — приложение не объявляет ответ верным только по его длине или оригинальности.`;
+}
+
+async function requestTemperature(task, temperatureValue, maxTokensValue, progressText = '') {
+  const requestBody = {
+    prompt: task,
+    mode: 'unrestricted',
+    settings: { temperature: temperatureValue, maxTokens: maxTokensValue },
+  };
+  status.textContent = progressText || `Запуск с ${temperatureLabel(temperatureValue)}…`;
+  answer.textContent = 'Пожалуйста, подождите.';
+  answer.classList.remove('error');
+  requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/chat\n${prettyJSON(requestBody)}\n\nОжидание ответа…`;
+
+  try {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify(requestBody),
+    });
+    const payload = await response.json();
+    const debug = payload.debug || { httpStatus: response.status };
+    requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON(debug)}`;
+    if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ.');
+    requestLog.textContent += `\n\nОТВЕТ МОДЕЛИ\n${payload.answer}`;
+    const result = { ...payload, temperature: temperatureValue };
+    temperatureRuns.set(temperatureValue, result);
+    temperatureTask = task;
+    updateTemperatureComparison();
+    answer.textContent = payload.answer;
+    status.textContent = `Готово: ${temperatureLabel(temperatureValue)}`;
+    return result;
+  } catch (error) {
+    const message = readableFetchError(error, 'Не удалось получить ответ.');
+    temperatureRuns.set(temperatureValue, { temperature: temperatureValue, error: message });
+    temperatureTask = task;
+    updateTemperatureComparison();
+    answer.textContent = message;
+    answer.classList.add('error');
+    status.textContent = 'Ошибка';
+    throw error;
+  }
+}
+
+async function runTemperatureComparison() {
+  const task = promptInput.value.trim();
+  if (!task) {
+    answer.textContent = 'Введите один запрос, чтобы сравнить температуры.';
+    answer.classList.add('error');
+    status.textContent = 'Ошибка';
+    promptInput.focus();
+    return;
+  }
+
+  const maxTokensValue = Number(maxTokens.value);
+  resetTemperatureResults();
+  setTemperatureBusy(true);
+  for (const [index, temperatureValue] of temperatureValues.entries()) {
+    try {
+      await requestTemperature(task, temperatureValue, maxTokensValue, `Запуск ${index + 1} из ${temperatureValues.length}: ${temperatureLabel(temperatureValue)}`);
+    } catch (_) {
+      // Continue with the next setting, so one failed request does not hide the comparison.
+    }
+  }
+  setTemperatureBusy(false);
+  status.textContent = 'Сравнение температур завершено';
 }
 
 function createResultCard(result) {
@@ -352,14 +518,29 @@ fillTestCase.addEventListener('click', () => {
   promptInput.focus();
 });
 
+fillTemperatureTask.addEventListener('click', () => {
+  promptInput.value = sampleTemperatureTask;
+  resetTemperatureResults();
+  answer.textContent = 'Пример запроса подставлен. Запустите четыре сравнения в четвёртом табе.';
+  answer.classList.remove('error');
+  status.textContent = 'Готово к запуску';
+  promptInput.focus();
+});
+
 runAllReasoning.addEventListener('click', runAllReasoningApproaches);
+runTemperatureComparisonButton.addEventListener('click', runTemperatureComparison);
 showPreparedPrompt.addEventListener('change', updateReasoningComparison);
 promptInput.addEventListener('input', () => {
   if (reasoningTask && promptInput.value.trim() !== reasoningTask) resetReasoningResults();
+  if (temperatureTask && promptInput.value.trim() !== temperatureTask) resetTemperatureResults();
 });
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (activeTabName() === 'temperature') {
+    await runTemperatureComparison();
+    return;
+  }
   if (activeTabName() === 'reasoning') {
     await runSelectedReasoning();
     return;

@@ -12,7 +12,7 @@
       <section class="card" aria-labelledby="title">
         <p class="eyebrow">DeepSeek chat</p>
         <h1 id="title">AI Challenge App</h1>
-        <p class="intro">Одна задача отправляется во всех режимах. Меняйте только способ управления ответом или рассуждением и сравнивайте результат.</p>
+        <p class="intro">Одна задача отправляется во всех режимах. Меняйте только настройку генерации, способ управления ответом или рассуждением — и сравнивайте результат.</p>
 
         <form id="chat-form">
           <label for="prompt">Одинаковая задача для всех запусков</label>
@@ -25,6 +25,7 @@
               <button id="generation-tab" class="lesson-tab" type="button" role="tab" aria-selected="true" aria-controls="generation-panel" tabindex="0" data-tab="generation">1. Настройки генерации</button>
               <button id="response-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="response-panel" tabindex="-1" data-tab="response">2. Контроль ответа</button>
               <button id="reasoning-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="reasoning-panel" tabindex="-1" data-tab="reasoning">3. Разные способы рассуждения</button>
+              <button id="temperature-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="temperature-panel" tabindex="-1" data-tab="temperature">4. Температура</button>
               <span class="lesson-tab-indicator" aria-hidden="true"></span>
             </div>
 
@@ -76,6 +77,94 @@
                   <label><input type="radio" name="response-mode" value="all"> <span><b>5. Все ограничения</b><small>JSON, поле answer до 220 символов и контролируемое завершение.</small></span></label>
                 </div>
               </fieldset>
+            </section>
+
+            <section id="temperature-panel" class="lesson-panel" role="tabpanel" aria-labelledby="temperature-tab" hidden>
+              <fieldset>
+                <legend>Один запрос — четыре температуры</legend>
+                <p class="hint">Нажмите «Запустить сравнение»: приложение четыре раза отправит один и тот же запрос. Меняется только <code>temperature</code>; <code>top_p</code> не используется, а лимит ответа остаётся одинаковым.</p>
+
+                <div class="test-case temperature-test-case" aria-labelledby="temperature-test-case-title">
+                  <div>
+                    <strong id="temperature-test-case-title">Пример запроса для эксперимента</strong>
+                    <p>Объясни школьнику в 2–3 предложениях, почему после дождя появляется радуга. Используй простой русский язык.</p>
+                  </div>
+                  <button id="fill-temperature-task" class="secondary-button" type="button">Подставить пример запроса</button>
+                  <p class="hint"><b>Факты для сверки:</b> в хорошем объяснении должны быть капли воды, преломление, внутреннее отражение и разложение света на цвета.</p>
+                </div>
+
+                <div class="temperature-settings" aria-label="Значения температуры для сравнения">
+                  <article>
+                    <code>temperature = 0</code>
+                    <p>Наиболее предсказуемый и сдержанный вариант.</p>
+                  </article>
+                  <article>
+                    <code>temperature = 0.7</code>
+                    <p>Баланс точности и выразительности.</p>
+                  </article>
+                  <article>
+                    <code>temperature = 1.2</code>
+                    <p>Больше неожиданных формулировок и идей.</p>
+                  </article>
+                  <article>
+                    <code>temperature = 1.8</code>
+                    <p>Максимальная вариативность и самые смелые варианты.</p>
+                  </article>
+                </div>
+
+                <div class="reasoning-actions">
+                  <button id="run-temperature-comparison" class="secondary-button" type="button">Запустить 4 сравнения</button>
+                  <span class="hint">Запуски идут последовательно, поэтому все четыре ответа используют одну и ту же формулировку запроса.</span>
+                </div>
+              </fieldset>
+
+              <details class="lesson-notes">
+                <summary>Что сравнивать в полученных ответах</summary>
+                <ol>
+                  <li><b>Точность:</b> все ли факты верны и отвечает ли текст на запрос. Для примера с радугой проверьте четыре факта выше.</li>
+                  <li><b>Креативность:</b> есть ли более оригинальные, понятные или образные формулировки, не подменяющие факты.</li>
+                  <li><b>Разнообразие:</b> отличаются ли лексика, структура и примеры. Для честной оценки повторите каждый вариант 2–3 раза.</li>
+                </ol>
+              </details>
+
+              <section class="temperature-guidance" aria-labelledby="temperature-guidance-title">
+                <div>
+                  <h3 id="temperature-guidance-title">Типичные ответы и когда их использовать</h3>
+                  <p class="hint">Это иллюстративные примеры, а не предсказание конкретного запуска: даже при одинаковой температуре ответы могут различаться.</p>
+                </div>
+                <div class="temperature-guidance-grid">
+                  <article>
+                    <strong><code>0</code> — стабильность</strong>
+                    <p class="temperature-example">«Радуга возникает, когда солнечный свет проходит через капли воды. Свет преломляется, отражается внутри капли и распадается на цвета».</p>
+                    <p><b>Подходит для:</b> извлечения данных, классификации, инструкций, повторяемых ответов и черновиков кода.</p>
+                  </article>
+                  <article>
+                    <strong><code>0.7</code> — баланс</strong>
+                    <p class="temperature-example">«Капли после дождя работают как маленькие призмы: солнечный свет преломляется, отражается внутри и превращается в цветную дугу».</p>
+                    <p><b>Подходит для:</b> диалогов, объяснений, писем и большинства обычных текстов.</p>
+                  </article>
+                  <article>
+                    <strong><code>1.2</code> — вариативность</strong>
+                    <p class="temperature-example">«После дождя миллионы капель превращают небо в большой калейдоскоп: солнечный луч изгибается, отражается и раскладывается на цветную дугу».</p>
+                    <p><b>Подходит для:</b> идей, названий, сторителлинга и поиска многих вариантов; факты стоит дополнительно проверять.</p>
+                  </article>
+                  <article>
+                    <strong><code>1.8</code> — максимум свободы</strong>
+                    <p class="temperature-example">«После дождя небо превращается в огромную палитру: солнечный свет ныряет в капли, преломляется, отражается внутри них и возвращается к нам цветной дугой».</p>
+                    <p><b>Подходит для:</b> свободного мозгового штурма, художественных образов и необычных концепций. Факты, расчёты и точные инструкции используйте только с обязательной проверкой.</p>
+                  </article>
+                </div>
+                <p class="hint temperature-caveat">Высокая температура повышает вариативность, но сама по себе не делает ответ неверным. <code>temperature = 0</code> также не гарантирует фактическую истинность.</p>
+              </section>
+
+              <section id="temperature-results-card" class="card temperature-results-card" aria-live="polite" aria-labelledby="temperature-results-title" hidden>
+                <div class="answer-heading">
+                  <h2 id="temperature-results-title">Результаты сравнения</h2>
+                  <span id="temperature-summary" role="status"></span>
+                </div>
+                <p id="temperature-comparison" class="hint">Запустите четыре одинаковых запроса с разной температурой.</p>
+                <div id="temperature-results" class="temperature-results"></div>
+              </section>
             </section>
 
             <section id="reasoning-panel" class="lesson-panel" role="tabpanel" aria-labelledby="reasoning-tab" hidden>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -153,6 +154,23 @@ func TestChatDefaultsMissingModeToUnrestricted(t *testing.T) {
 	}
 	if client.mode != models.ModeUnrestricted {
 		t.Fatalf("mode = %q, want %q", client.mode, models.ModeUnrestricted)
+	}
+}
+
+func TestChatPreservesTemperatureExperimentValues(t *testing.T) {
+	for _, temperature := range []float64{0, 0.7, 1.2, 1.8} {
+		t.Run(fmt.Sprintf("temperature %.1f", temperature), func(t *testing.T) {
+			client := &fakeClient{answer: "ok"}
+			body := fmt.Sprintf(`{"prompt":"Один и тот же запрос","mode":"unrestricted","settings":{"temperature":%g,"maxTokens":512}}`, temperature)
+			recorder := postJSON(t, New(client), body)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			if client.settings.TopP != nil || client.settings.Temperature == nil || *client.settings.Temperature != temperature || client.settings.MaxTokens != 512 {
+				t.Fatalf("settings = %#v", client.settings)
+			}
+		})
 	}
 }
 
