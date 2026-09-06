@@ -26,6 +26,7 @@
               <button id="response-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="response-panel" tabindex="-1" data-tab="response">2. Контроль ответа</button>
               <button id="reasoning-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="reasoning-panel" tabindex="-1" data-tab="reasoning">3. Разные способы рассуждения</button>
               <button id="temperature-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="temperature-panel" tabindex="-1" data-tab="temperature">4. Температура</button>
+              <button id="model-versions-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="model-versions-panel" tabindex="-1" data-tab="model-versions">5. Версии моделей</button>
               <span class="lesson-tab-indicator" aria-hidden="true"></span>
             </div>
 
@@ -217,6 +218,28 @@
                   <strong>Как выбрать наиболее точный результат</strong>
                   <p>Сначала исключите ответы, не совпадающие с эталоном. Среди совпавших предпочтите тот, где верно учтено условие, виден проверяемый расчёт и нет лишних неподтверждённых допущений.</p>
                 </div>
+              </section>
+            </section>
+
+            <section id="model-versions-panel" class="lesson-panel" role="tabpanel" aria-labelledby="model-versions-tab" hidden>
+              <fieldset>
+                <legend>Версии моделей: один инцидентный промпт</legend>
+                <p class="hint">Запуск использует ровно полный промпт урока 5 (без редактирования и сокращения) и одинаковые параметры для всех моделей. Сервер подтверждает DeepSeek через <code>GET /models</code>, а для третьей карточки выбирает слабую бесплатную текстовую модель из актуального каталога OpenRouter.</p>
+                <div class="model-version-actions">
+                  <button id="run-model-versions" class="secondary-button" type="button">Сравнить Flash, Pro и слабую модель</button>
+                  <span id="model-versions-status" class="hint" role="status">Результаты ещё не получены.</span>
+                </div>
+              </fieldset>
+
+              <section id="model-versions-results" class="card model-versions-results" aria-live="polite" hidden>
+                <div class="answer-heading"><h2>Сравнение запусков</h2></div>
+                <p id="model-versions-catalog" class="hint"></p>
+                <div id="model-versions-cards" class="model-version-cards"></div>
+                <section class="economy-analysis" aria-labelledby="economy-title">
+                  <h3 id="economy-title">Экономика и качество</h3>
+                  <div id="model-versions-analysis">После запусков здесь появится сравнение скорости, токенов, стоимости и качества.</div>
+                </section>
+                <details class="lesson-notes"><summary>Полный неизменяемый промпт и источники</summary><pre id="model-versions-prompt"></pre><ul id="model-versions-sources"></ul></details>
               </section>
             </section>
           </div>
