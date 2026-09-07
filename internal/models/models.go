@@ -6,6 +6,22 @@ type GenerationSettings struct {
 	MaxTokens   int      `json:"maxTokens"`
 }
 
+// ChatMessage is a provider-neutral dialogue message. The agent owns the
+// sequence of these messages; the API client only serializes it for the LLM.
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type AgentRequest struct {
+	Message string `json:"message"`
+}
+
+type AgentResponse struct {
+	Answer   string        `json:"answer"`
+	Messages []ChatMessage `json:"messages"`
+}
+
 type ResponseMode string
 
 const StopSequence = "<<END>>"

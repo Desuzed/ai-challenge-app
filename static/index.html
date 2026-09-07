@@ -10,13 +10,31 @@
   <body>
     <main class="container">
       <section class="card" aria-labelledby="title">
-        <p class="eyebrow">DeepSeek chat</p>
+        <p class="eyebrow">Урок 6 · Первый агент</p>
         <h1 id="title">AI Challenge App</h1>
-        <p class="intro">Одна задача отправляется во всех режимах. Меняйте только настройку генерации, способ управления ответом или рассуждением — и сравнивайте результат.</p>
+        <p class="intro">Диалоговый агент сам хранит историю текущей сессии, собирает сообщения и обращается к LLM. Его настройки и системная инструкция остаются внутри агента.</p>
 
+        <section class="agent-chat" aria-labelledby="agent-title">
+          <div class="answer-heading">
+            <h2 id="agent-title">Чат с агентом</h2>
+            <span class="hint">История доступна только в этой сессии</span>
+          </div>
+          <div id="agent-history" class="agent-history" aria-live="polite">
+            <p class="hint">История диалога появится здесь после первого сообщения.</p>
+          </div>
+          <form id="agent-form">
+            <label for="agent-message">Ваше сообщение</label>
+            <textarea id="agent-message" name="message" rows="3" maxlength="32000" autofocus></textarea>
+            <button id="agent-submit" type="submit">Отправить агенту</button>
+          </form>
+        </section>
+
+        <details class="week-one">
+          <summary>1я неделя</summary>
+          <p class="hint">Уроки 1–5 сохранены без изменений. Раскройте блок, чтобы продолжить эксперименты с настройками, форматами и моделями.</p>
         <form id="chat-form">
           <label for="prompt">Одинаковая задача для всех запусков</label>
-          <textarea id="prompt" name="prompt" rows="2" maxlength="32000" autofocus></textarea>
+          <textarea id="prompt" name="prompt" rows="2" maxlength="32000"></textarea>
 
           <button id="submit" type="submit">Спросить DeepSeek</button>
 
@@ -246,6 +264,7 @@
 
           <p class="hint">Ключ DeepSeek находится только на сервере и не передаётся в браузер или журнал.</p>
         </form>
+        </details>
       </section>
 
       <section class="card answer-card" aria-live="polite" aria-labelledby="answer-title">

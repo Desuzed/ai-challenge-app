@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"ai-challenge-app/internal/agent"
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/models"
 	"ai-challenge-app/internal/openrouter"
@@ -21,6 +24,8 @@ const (
 	defaultTokens        = 512
 	reasoningTimeout     = 95 * time.Second
 	modelVersionsTimeout = 4 * time.Minute
+	agentTimeout         = 55 * time.Second
+	agentSessionCookie   = "agent_session"
 )
 
 type completer interface {
@@ -46,14 +51,79 @@ type Handler struct {
 	reasoningClient     reasoningCompleter
 	modelVersionsClient modelVersionsCompleter
 	openRouterClient    openRouterCompleter
+	agent               *agent.Agent
 }
 
 func (h *Handler) SetOpenRouterClient(client openRouterCompleter) { h.openRouterClient = client }
+func (h *Handler) SetAgent(value *agent.Agent)                    { h.agent = value }
 
 func New(client completer) *Handler {
 	reasoningClient, _ := client.(reasoningCompleter)
 	modelVersionsClient, _ := client.(modelVersionsCompleter)
 	return &Handler{client: client, reasoningClient: reasoningClient, modelVersionsClient: modelVersionsClient}
+}
+
+// AgentChat keeps HTTP concerns thin: dialogue history and model settings are
+// intentionally encapsulated by the agent, not accepted from the browser.
+func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
+	if h.agent == nil {
+		writeAgentError(w, http.StatusServiceUnavailable, "Агент сейчас недоступен.")
+		return
+	}
+	sessionID, err := agentSessionID(w, r)
+	if err != nil {
+		writeAgentError(w, http.StatusInternalServerError, "Не удалось создать сессию агента.")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: h.agent.History(sessionID)})
+		return
+	case http.MethodPost:
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте GET или POST-запрос.")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	defer r.Body.Close()
+	var input models.AgentRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeAgentError(w, http.StatusBadRequest, "Не удалось прочитать запрос.")
+		return
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeAgentError(w, http.StatusBadRequest, "В запросе должен быть один JSON-объект.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
+	defer cancel()
+	result, err := h.agent.Respond(ctx, sessionID, input.Message)
+	if err != nil {
+		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) {
+			writeAgentError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		status, message := errorResponse(err)
+		writeAgentError(w, status, message)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func agentSessionID(w http.ResponseWriter, r *http.Request) (string, error) {
+	if cookie, err := r.Cookie(agentSessionCookie); err == nil && len(cookie.Value) >= 20 {
+		return cookie.Value, nil
+	}
+	bytes := make([]byte, 24)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	id := base64.RawURLEncoding.EncodeToString(bytes)
+	http.SetCookie(w, &http.Cookie{Name: agentSessionCookie, Value: id, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 60 * 60 * 24})
+	return id, nil
 }
 
 const modelVersionsPrompt = `Ты — руководитель разбора инцидентов мобильного маркетплейса. Проведи технический разбор на основании только приведённых данных.
@@ -493,6 +563,12 @@ func errorResponse(err error) (int, string) {
 
 func writeError(w http.ResponseWriter, status int, message string, debug *models.DebugInfo) {
 	writeJSON(w, status, models.ErrorResponse{Error: message, Debug: debug})
+}
+
+func writeAgentError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, struct {
+		Error string `json:"error"`
+	}{Error: message})
 }
 
 func writeReasoningError(w http.ResponseWriter, status int, message string, debug *models.ReasoningDebugInfo) {
