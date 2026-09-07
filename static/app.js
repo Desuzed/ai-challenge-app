@@ -4,6 +4,10 @@ const answer = document.querySelector('#answer');
 const status = document.querySelector('#status');
 const submit = document.querySelector('#submit');
 const requestLog = document.querySelector('#request-log');
+const agentForm = document.querySelector('#agent-form');
+const agentMessage = document.querySelector('#agent-message');
+const agentSubmit = document.querySelector('#agent-submit');
+const agentHistory = document.querySelector('#agent-history');
 const temperature = document.querySelector('#temperature');
 const topP = document.querySelector('#top-p');
 const maxTokens = document.querySelector('#max-tokens');
@@ -61,6 +65,88 @@ const temperatureRuns = new Map();
 let reasoningTask = '';
 let temperatureTask = '';
 let savedMaxTokens = maxTokens.value;
+
+function renderAgentHistory(messages) {
+  agentHistory.replaceChildren();
+  if (!messages || messages.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = 'История диалога появится здесь после первого сообщения.';
+    agentHistory.append(empty);
+    return;
+  }
+  messages.forEach((message) => {
+    const item = document.createElement('article');
+    item.className = `agent-message agent-message-${message.role}`;
+    const role = document.createElement('strong');
+    role.textContent = message.role === 'user' ? 'Вы' : 'Агент';
+    const content = document.createElement('p');
+    content.textContent = message.content;
+    item.append(role, content);
+    agentHistory.append(item);
+  });
+  agentHistory.scrollTop = agentHistory.scrollHeight;
+}
+
+async function readAgentResponse(response) {
+  const body = await response.text();
+  try {
+    return JSON.parse(body);
+  } catch (_) {
+    if (response.status === 404) {
+      throw new Error('Сервер запущен в старой версии и не знает агента. Остановите его (Ctrl+C) и снова выполните go run .');
+    }
+    throw new Error('Сервер вернул ответ в неожиданном формате. Перезапустите приложение и попробуйте ещё раз.');
+  }
+}
+
+async function loadAgentHistory() {
+  try {
+    const response = await fetch('/api/agent/chat', { cache: 'no-store' });
+    const payload = await readAgentResponse(response);
+    if (response.ok) renderAgentHistory(payload.messages);
+  } catch (_) {
+    // The chat remains usable; the submit path will show a concrete error.
+  }
+}
+
+agentForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const message = agentMessage.value.trim();
+  if (!message) {
+    answer.textContent = 'Введите сообщение для агента.';
+    answer.classList.add('error');
+    status.textContent = 'Ошибка';
+    agentMessage.focus();
+    return;
+  }
+  agentSubmit.disabled = true;
+  answer.textContent = 'Агент обрабатывает сообщение…';
+  answer.classList.remove('error');
+  status.textContent = 'Агент отвечает…';
+  requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON({ message })}\n\nАгент добавляет сообщение в историю и обращается к LLM…`;
+  try {
+    const response = await fetch('/api/agent/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ message }),
+    });
+    const payload = await readAgentResponse(response);
+    requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON({ httpStatus: response.status, messagesInSession: payload.messages?.length })}`;
+    if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ агента.');
+    requestLog.textContent += `\n\nОТВЕТ АГЕНТА\n${payload.answer}`;
+    renderAgentHistory(payload.messages);
+    answer.textContent = payload.answer;
+    status.textContent = 'Готово';
+    agentMessage.value = '';
+    agentMessage.focus();
+  } catch (error) {
+    answer.textContent = readableFetchError(error, 'Не удалось получить ответ агента.');
+    answer.classList.add('error');
+    status.textContent = 'Ошибка';
+  } finally {
+    agentSubmit.disabled = false;
+  }
+});
 
 function activeTabName() {
   return tabList.dataset.activeTab;
@@ -709,3 +795,4 @@ form.addEventListener('submit', async (event) => {
 });
 
 updateSubmitLabel();
+loadAgentHistory();
