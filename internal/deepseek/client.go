@@ -46,20 +46,15 @@ func newClient(apiKey string, httpClient *http.Client, baseURL string) *Client {
 
 func ModelName() string { return model }
 
-type message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
 type completionRequest struct {
-	Model          string          `json:"model"`
-	Messages       []message       `json:"messages"`
-	Thinking       thinking        `json:"thinking"`
-	Temperature    *float64        `json:"temperature,omitempty"`
-	TopP           *float64        `json:"top_p,omitempty"`
-	MaxTokens      int             `json:"max_tokens"`
-	ResponseFormat *responseFormat `json:"response_format,omitempty"`
-	Stop           []string        `json:"stop,omitempty"`
+	Model          string               `json:"model"`
+	Messages       []models.ChatMessage `json:"messages"`
+	Thinking       thinking             `json:"thinking"`
+	Temperature    *float64             `json:"temperature,omitempty"`
+	TopP           *float64             `json:"top_p,omitempty"`
+	MaxTokens      int                  `json:"max_tokens"`
+	ResponseFormat *responseFormat      `json:"response_format,omitempty"`
+	Stop           []string             `json:"stop,omitempty"`
 }
 
 type responseFormat struct {
@@ -72,8 +67,8 @@ type thinking struct {
 
 type completionResponse struct {
 	Choices []struct {
-		Message      message `json:"message"`
-		FinishReason string  `json:"finish_reason"`
+		Message      models.ChatMessage `json:"message"`
+		FinishReason string             `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens          int `json:"prompt_tokens"`
@@ -100,6 +95,15 @@ func (c *Client) CompleteWithSystem(ctx context.Context, system, prompt string, 
 		return "", "", ErrNoAPIKey
 	}
 	return c.complete(ctx, system, prompt, settings, nil, nil, settings.MaxTokens)
+}
+
+// CompleteMessages sends a complete dialogue assembled by an agent. It is the
+// only method that accepts conversation history; the API key stays private.
+func (c *Client) CompleteMessages(ctx context.Context, messages []models.ChatMessage, settings models.GenerationSettings) (Completion, error) {
+	if c.apiKey == "" {
+		return Completion{}, ErrNoAPIKey
+	}
+	return c.completeMessages(ctx, model, messages, settings, nil, nil, settings.MaxTokens)
 }
 
 // CompleteModel runs a named catalog model with the same system instruction and
@@ -168,13 +172,17 @@ func (c *Client) complete(ctx context.Context, system, prompt string, settings m
 }
 
 func (c *Client) completeModel(ctx context.Context, modelName, system, prompt string, settings models.GenerationSettings, responseFormat *responseFormat, stop []string, maxTokens int) (Completion, error) {
+	return c.completeMessages(ctx, modelName, []models.ChatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: prompt},
+	}, settings, responseFormat, stop, maxTokens)
+}
+
+func (c *Client) completeMessages(ctx context.Context, modelName string, messages []models.ChatMessage, settings models.GenerationSettings, responseFormat *responseFormat, stop []string, maxTokens int) (Completion, error) {
 
 	body, err := json.Marshal(completionRequest{
-		Model: modelName,
-		Messages: []message{
-			{Role: "system", Content: system},
-			{Role: "user", Content: prompt},
-		},
+		Model:          modelName,
+		Messages:       messages,
 		Thinking:       thinking{Type: "disabled"},
 		Temperature:    settings.Temperature,
 		TopP:           settings.TopP,
