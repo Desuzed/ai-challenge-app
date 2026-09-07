@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-challenge-app/internal/agent"
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/handlers"
 	"ai-challenge-app/internal/openrouter"
@@ -35,10 +36,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
 	handler := handlers.New(client)
+	handler.SetAgent(agent.New(client))
 	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
 	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))
 	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
+	mux.Handle("/api/agent/chat", http.HandlerFunc(handler.AgentChat))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
