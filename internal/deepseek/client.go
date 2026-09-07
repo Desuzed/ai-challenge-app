@@ -15,14 +15,16 @@ import (
 )
 
 const (
-	endpoint = "https://api.deepseek.com/chat/completions"
-	model    = "deepseek-v4-flash"
+	endpoint       = "https://api.deepseek.com/chat/completions"
+	modelsEndpoint = "https://api.deepseek.com/models"
+	model          = "deepseek-v4-flash"
 )
 
 var (
 	ErrNoAPIKey     = errors.New("DeepSeek API key is not configured")
 	ErrUnauthorized = errors.New("DeepSeek API key was rejected")
 	ErrRateLimited  = errors.New("DeepSeek API rate limit reached")
+	ErrTimeout      = errors.New("DeepSeek API request timed out")
 	ErrUpstream     = errors.New("DeepSeek API request failed")
 )
 
@@ -31,6 +33,8 @@ type Client struct {
 	httpClient *http.Client
 	endpoint   string
 }
+
+type Completion = models.ModelCompletion
 
 func NewClient(apiKey string, timeout time.Duration) *Client {
 	return newClient(apiKey, &http.Client{Timeout: timeout}, endpoint)
@@ -71,6 +75,13 @@ type completionResponse struct {
 		Message      message `json:"message"`
 		FinishReason string  `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens          int `json:"prompt_tokens"`
+		CompletionTokens      int `json:"completion_tokens"`
+		TotalTokens           int `json:"total_tokens"`
+		PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+		PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+	} `json:"usage"`
 }
 
 // Complete sends one request. The key is kept only in this server-side client.
@@ -91,10 +102,75 @@ func (c *Client) CompleteWithSystem(ctx context.Context, system, prompt string, 
 	return c.complete(ctx, system, prompt, settings, nil, nil, settings.MaxTokens)
 }
 
+// CompleteModel runs a named catalog model with the same system instruction and
+// request controls. It is used only by lesson 5.
+func (c *Client) CompleteModel(ctx context.Context, modelName, system, prompt string, settings models.GenerationSettings) (Completion, error) {
+	if c.apiKey == "" {
+		return Completion{}, ErrNoAPIKey
+	}
+	// Pro can legitimately take longer than the regular chat lesson. Keep the
+	// longer allowance local to this explicit comparison rather than slowing all
+	// other endpoints.
+	comparisonClient := *c
+	comparisonHTTPClient := *c.httpClient
+	comparisonHTTPClient.Timeout = 120 * time.Second
+	comparisonClient.httpClient = &comparisonHTTPClient
+	return comparisonClient.completeModel(ctx, modelName, system, prompt, settings, nil, nil, settings.MaxTokens)
+}
+
+// ListModels is a small, read-only capability check. It never exposes the key.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	if c.apiKey == "" {
+		return nil, ErrNoAPIKey
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsEndpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create model request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, ErrTimeout
+		}
+		return nil, ErrUpstream
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, ErrUnauthorized
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, ErrRateLimited
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, ErrUpstream
+	}
+	var decoded struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&decoded); err != nil {
+		return nil, ErrUpstream
+	}
+	ids := make([]string, 0, len(decoded.Data))
+	for _, item := range decoded.Data {
+		if id := strings.TrimSpace(item.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
 func (c *Client) complete(ctx context.Context, system, prompt string, settings models.GenerationSettings, responseFormat *responseFormat, stop []string, maxTokens int) (string, string, error) {
+	result, err := c.completeModel(ctx, model, system, prompt, settings, responseFormat, stop, maxTokens)
+	return result.Answer, result.FinishReason, err
+}
+
+func (c *Client) completeModel(ctx context.Context, modelName, system, prompt string, settings models.GenerationSettings, responseFormat *responseFormat, stop []string, maxTokens int) (Completion, error) {
 
 	body, err := json.Marshal(completionRequest{
-		Model: model,
+		Model: modelName,
 		Messages: []message{
 			{Role: "system", Content: system},
 			{Role: "user", Content: prompt},
@@ -107,41 +183,47 @@ func (c *Client) complete(ctx context.Context, system, prompt string, settings m
 		Stop:           stop,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("encode request: %w", err)
+		return Completion{}, fmt.Errorf("encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", "", fmt.Errorf("create request: %w", err)
+		return Completion{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", "", ErrUpstream
+		if errors.Is(err, context.DeadlineExceeded) {
+			return Completion{}, ErrTimeout
+		}
+		return Completion{}, ErrUpstream
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", "", ErrUnauthorized
+		return Completion{}, ErrUnauthorized
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return "", "", ErrRateLimited
+		return Completion{}, ErrRateLimited
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", "", ErrUpstream
+		return Completion{}, ErrUpstream
 	}
 
 	var decoded completionResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&decoded); err != nil {
-		return "", "", ErrUpstream
+		return Completion{}, ErrUpstream
 	}
 	if len(decoded.Choices) == 0 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
-		return "", "", ErrUpstream
+		return Completion{}, ErrUpstream
 	}
 	answer := strings.TrimSpace(strings.ReplaceAll(decoded.Choices[0].Message.Content, models.StopSequence, ""))
-	return answer, decoded.Choices[0].FinishReason, nil
+	return Completion{Answer: answer, FinishReason: decoded.Choices[0].FinishReason, Usage: models.ModelUsage{
+		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens, TotalTokens: decoded.Usage.TotalTokens,
+		CacheHitTokens: decoded.Usage.PromptCacheHitTokens, CacheMissTokens: decoded.Usage.PromptCacheMissTokens,
+	}}, nil
 }
 
 func requestControls(mode models.ResponseMode, selectedMaxTokens int) (string, *responseFormat, []string, int) {

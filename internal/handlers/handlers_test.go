@@ -24,6 +24,9 @@ type fakeClient struct {
 	reasoningPrompts  []string
 	reasoningSystems  []string
 	reasoningSettings []models.GenerationSettings
+	catalog           []string
+	modelCalls        []string
+	modelPrompt       string
 }
 
 func (f *fakeClient) Complete(_ context.Context, prompt string, mode models.ResponseMode, settings models.GenerationSettings) (string, string, error) {
@@ -43,6 +46,14 @@ func (f *fakeClient) CompleteWithSystem(_ context.Context, system, prompt string
 		return answer, "stop", f.err
 	}
 	return f.answer, "stop", f.err
+}
+
+func (f *fakeClient) ListModels(_ context.Context) ([]string, error) { return f.catalog, f.err }
+
+func (f *fakeClient) CompleteModel(_ context.Context, name, _ string, prompt string, _ models.GenerationSettings) (deepseek.Completion, error) {
+	f.modelCalls = append(f.modelCalls, name)
+	f.modelPrompt = prompt
+	return deepseek.Completion{Answer: "Разбор " + name, FinishReason: "stop", Usage: models.ModelUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}}, f.err
 }
 
 func TestChatSuccess(t *testing.T) {
@@ -126,6 +137,32 @@ func TestChatOnlyAllowsPOST(t *testing.T) {
 	New(&fakeClient{}).Chat(recorder, req)
 	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != http.MethodPost {
 		t.Fatalf("unexpected response: %d, Allow=%q", recorder.Code, recorder.Header().Get("Allow"))
+	}
+}
+
+func TestModelVersionsUsesFullFixedPrompt(t *testing.T) {
+	client := &fakeClient{catalog: []string{"deepseek-v4-pro", "deepseek-v4-flash"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/model-versions", strings.NewReader(`{}`))
+	recorder := httptest.NewRecorder()
+	New(client).ModelVersions(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if got := strings.Join(client.modelCalls, ","); got != "deepseek-v4-flash,deepseek-v4-pro" {
+		t.Fatalf("model calls = %q", got)
+	}
+	if client.modelPrompt != modelVersionsPrompt {
+		t.Fatal("lesson prompt was changed before request")
+	}
+	if !strings.Contains(client.modelPrompt, "Предложи минимум пять автоматических проверок.") || !strings.Contains(client.modelPrompt, "Не придумывай отсутствующие факты.") {
+		t.Fatal("required prompt parts missing")
+	}
+	var response models.ModelVersionsResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Runs) != 2 || response.Runs[0].Provider != "DeepSeek" || response.Runs[1].Provider != "DeepSeek" {
+		t.Fatalf("runs = %#v", response.Runs)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/handlers"
+	"ai-challenge-app/internal/openrouter"
 )
 
 const (
@@ -34,8 +35,10 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
 	handler := handlers.New(client)
+	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
 	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))
+	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
@@ -44,7 +47,8 @@ func main() {
 		ReadTimeout:       15 * time.Second,
 		// The prompt-designer mode makes two sequential API calls and can take
 		// longer than the single-response lessons.
-		WriteTimeout: 100 * time.Second,
+		// Lesson 5 can make two slower model calls in sequence (Flash and Pro).
+		WriteTimeout: 250 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 

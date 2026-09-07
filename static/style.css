@@ -12,15 +12,16 @@ input, textarea, button { font: inherit; }
 textarea { width: 100%; padding: 11px 12px; border: 1px solid #b9c7d8; border-radius: 8px; background: #fff; resize: vertical; }
 textarea:focus, input:focus { outline: 3px solid #bdd1ff; border-color: #4169e1; }
 .lesson-tabs { display: grid; gap: 16px; }
-.lesson-tablist { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid #d7e1ef; }
+.lesson-tablist { position: relative; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 1px solid #d7e1ef; }
 .lesson-tab { z-index: 1; margin: 0; padding: 0 8px 12px; border: 0; border-radius: 0; background: transparent; color: #526174; font-size: .94rem; font-weight: 650; text-align: center; }
 .lesson-tab:hover { background: transparent; color: #395577; }
 .lesson-tab:focus-visible { outline: 3px solid #bdd1ff; outline-offset: 2px; }
 .lesson-tab[aria-selected="true"] { color: #315edb; }
-.lesson-tab-indicator { position: absolute; bottom: -1px; left: 0; width: 25%; height: 3px; border-radius: 3px 3px 0 0; background: #4169e1; transition: transform .24s cubic-bezier(.2, .8, .2, 1); }
+.lesson-tab-indicator { position: absolute; bottom: -1px; left: 0; width: 20%; height: 3px; border-radius: 3px 3px 0 0; background: #4169e1; transition: transform .24s cubic-bezier(.2, .8, .2, 1); }
 .lesson-tablist[data-active-tab="response"] .lesson-tab-indicator { transform: translateX(100%); }
 .lesson-tablist[data-active-tab="reasoning"] .lesson-tab-indicator { transform: translateX(200%); }
 .lesson-tablist[data-active-tab="temperature"] .lesson-tab-indicator { transform: translateX(300%); }
+.lesson-tablist[data-active-tab="model-versions"] .lesson-tab-indicator { transform: translateX(400%); }
 .lesson-panel { display: grid; gap: 12px; }
 .lesson-panel[hidden] { display: none; }
 fieldset { margin: 4px 0 0; padding: 16px; border: 1px solid #d7e1ef; border-radius: 10px; }
@@ -74,6 +75,18 @@ button:hover { background: #234cb9; } button:disabled { cursor: wait; opacity: .
 .answer-card { min-height: 180px; } .answer-heading { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; } #status { color: #526174; font-size: .9rem; }
 #answer { margin: 18px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
 .reasoning-results-card { display: grid; gap: 16px; }
+.model-version-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.model-versions-results { display: grid; gap: 16px; margin-top: 16px; }
+.model-version-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
+.model-version-card { padding: 16px; border: 1px solid #d7e1ef; border-radius: 10px; background: #fbfdff; }
+.model-version-card.unsupported { border-color: #e8c780; background: #fffaf0; }
+.model-version-card h3 { margin: 0; }
+.model-version-card p { overflow-wrap: anywhere; }
+.model-version-meta { color: #526174; font-size: .9rem; line-height: 1.5; }
+.model-version-answer { white-space: pre-wrap; line-height: 1.5; max-height: 320px; overflow: auto; }
+.economy-analysis { padding: 16px; border-left: 4px solid #4169e1; background: #f3f6ff; }
+.economy-analysis h3 { margin-top: 0; }
+.model-version-conclusions { margin: 0; padding-left: 20px; display: grid; gap: 7px; line-height: 1.5; }
 .reasoning-results { display: grid; gap: 14px; }
 .temperature-results-card { display: grid; gap: 16px; }
 .temperature-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
