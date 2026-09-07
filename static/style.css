@@ -6,6 +6,17 @@ body { margin: 0; }
 .eyebrow { margin: 0; color: #4169e1; font-weight: 700; font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
 h1 { margin: 6px 0; font-size: clamp(1.8rem, 5vw, 2.5rem); } h2 { margin: 0; font-size: 1.1rem; }
 .intro { margin: 0 0 24px; color: #526174; }
+.agent-chat { display: grid; gap: 14px; padding: 18px; border: 1px solid #cbd9ff; border-radius: 12px; background: #f8faff; }
+.agent-chat form { display: grid; gap: 12px; }
+.agent-history { display: grid; gap: 10px; max-height: 380px; overflow: auto; padding: 4px; }
+.agent-message { max-width: 85%; padding: 11px 13px; border: 1px solid #d7e1ef; border-radius: 10px; background: #fff; }
+.agent-message strong { color: #395577; font-size: .85rem; }
+.agent-message p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.agent-message-user { justify-self: end; border-color: #9db5f4; background: #edf3ff; }
+.agent-message-assistant { justify-self: start; }
+.week-one { display: grid; gap: 14px; margin-top: 24px; padding-top: 18px; border-top: 1px solid #d7e1ef; }
+.week-one[open] summary { margin-bottom: 0; }
+.week-one > summary { font-size: 1.05rem; }
 form { display: grid; gap: 12px; }
 label, legend { font-weight: 650; font-size: .94rem; }
 input, textarea, button { font: inherit; }
