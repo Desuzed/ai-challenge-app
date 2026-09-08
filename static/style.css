@@ -8,6 +8,7 @@ h1 { margin: 6px 0; font-size: clamp(1.8rem, 5vw, 2.5rem); } h2 { margin: 0; fon
 .intro { margin: 0 0 24px; color: #526174; }
 .agent-chat { display: grid; gap: 14px; padding: 18px; border: 1px solid #cbd9ff; border-radius: 12px; background: #f8faff; }
 .agent-chat form { display: grid; gap: 12px; }
+.agent-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .agent-history { display: grid; gap: 10px; max-height: 380px; overflow: auto; padding: 4px; }
 .agent-message { max-width: 85%; padding: 11px 13px; border: 1px solid #d7e1ef; border-radius: 10px; background: #fff; }
 .agent-message strong { color: #395577; font-size: .85rem; }
