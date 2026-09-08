@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -13,6 +14,34 @@ type fakeCompleter struct {
 	requests [][]models.ChatMessage
 	answer   string
 	err      error
+}
+
+func TestPersistentAgentRestoresHistoryAfterRestart(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "state", "agent-history.json"))
+	firstClient := &fakeCompleter{answer: "Запомнил"}
+	firstAgent, err := NewPersistent(firstClient, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := firstAgent.Respond(context.Background(), "session-a", "Мой любимый цвет — зелёный"); err != nil {
+		t.Fatal(err)
+	}
+
+	secondClient := &fakeCompleter{answer: "Продолжаю"}
+	secondAgent, err := NewPersistent(secondClient, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondAgent.Respond(context.Background(), "session-a", "Какой мой любимый цвет?"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := secondClient.requests[0][1:], []models.ChatMessage{
+		{Role: "user", Content: "Мой любимый цвет — зелёный"},
+		{Role: "assistant", Content: "Запомнил"},
+		{Role: "user", Content: "Какой мой любимый цвет?"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("restored request = %#v, want %#v", got, want)
+	}
 }
 
 func (f *fakeCompleter) CompleteMessages(_ context.Context, messages []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
