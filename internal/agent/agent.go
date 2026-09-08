@@ -54,7 +54,7 @@ func newAgent(client completer, store Store, restored map[string][]models.ChatMe
 	temperature := 0.7
 	value := &Agent{
 		client:   client,
-		system:   "Ты полезный диалоговый агент. Отвечай точно, дружелюбно и по-русски. Не раскрывай скрытые внутренние рассуждения.",
+		system:   "Ты полезный диалоговый агент и продолжаешь текущий диалог. Перед ответом внимательно учитывай все предыдущие реплики в истории: не отрицай факты, которые в ней явно есть. Отвечай точно, дружелюбно и по-русски. Не раскрывай скрытые внутренние рассуждения.",
 		settings: models.GenerationSettings{Temperature: &temperature, MaxTokens: 512},
 		sessions: make(map[string]*conversation),
 		store:    store,
@@ -105,6 +105,25 @@ func (a *Agent) History(sessionID string) []models.ChatMessage {
 	conversation.mu.Lock()
 	defer conversation.mu.Unlock()
 	return copyMessages(conversation.messages)
+}
+
+// Clear removes one browser session from memory and durable storage.
+func (a *Agent) Clear(sessionID string) error {
+	a.persistMu.Lock()
+	defer a.persistMu.Unlock()
+	a.mu.Lock()
+	previous, existed := a.sessions[sessionID]
+	delete(a.sessions, sessionID)
+	a.mu.Unlock()
+	if err := a.save(); err != nil {
+		if existed {
+			a.mu.Lock()
+			a.sessions[sessionID] = previous
+			a.mu.Unlock()
+		}
+		return ErrHistorySave
+	}
+	return nil
 }
 
 func (a *Agent) conversation(sessionID string) *conversation {
