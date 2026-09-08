@@ -16,6 +16,7 @@ const maxMessageCharacters = 32000
 
 var ErrEmptyMessage = errors.New("Введите сообщение.")
 var ErrMessageTooLong = errors.New("Сообщение слишком длинное.")
+var ErrHistorySave = errors.New("Не удалось сохранить историю диалога.")
 
 type completer interface {
 	CompleteMessages(context.Context, []models.ChatMessage, models.GenerationSettings) (models.ModelCompletion, error)
@@ -27,21 +28,41 @@ type conversation struct {
 }
 
 type Agent struct {
-	client   completer
-	system   string
-	settings models.GenerationSettings
-	mu       sync.Mutex
-	sessions map[string]*conversation
+	client    completer
+	system    string
+	settings  models.GenerationSettings
+	store     Store
+	mu        sync.Mutex
+	persistMu sync.Mutex
+	sessions  map[string]*conversation
 }
 
 func New(client completer) *Agent {
+	return newAgent(client, nil, nil)
+}
+
+// NewPersistent restores previous sessions before the HTTP server starts.
+func NewPersistent(client completer, store Store) (*Agent, error) {
+	sessions, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+	return newAgent(client, store, sessions), nil
+}
+
+func newAgent(client completer, store Store, restored map[string][]models.ChatMessage) *Agent {
 	temperature := 0.7
-	return &Agent{
+	value := &Agent{
 		client:   client,
 		system:   "Ты полезный диалоговый агент. Отвечай точно, дружелюбно и по-русски. Не раскрывай скрытые внутренние рассуждения.",
 		settings: models.GenerationSettings{Temperature: &temperature, MaxTokens: 512},
 		sessions: make(map[string]*conversation),
+		store:    store,
 	}
+	for id, messages := range restored {
+		value.sessions[id] = &conversation{messages: copyMessages(messages)}
+	}
+	return value
 }
 
 // Respond appends a user message, sends the entire dialogue to the LLM, and
@@ -55,6 +76,9 @@ func (a *Agent) Respond(ctx context.Context, sessionID, input string) (models.Ag
 		return models.AgentResponse{}, ErrMessageTooLong
 	}
 
+	// Serializing writes keeps the on-disk snapshot consistent across sessions.
+	a.persistMu.Lock()
+	defer a.persistMu.Unlock()
 	conversation := a.conversation(sessionID)
 	conversation.mu.Lock()
 	defer conversation.mu.Unlock()
@@ -69,6 +93,10 @@ func (a *Agent) Respond(ctx context.Context, sessionID, input string) (models.Ag
 		return models.AgentResponse{}, err
 	}
 	conversation.messages = append(conversation.messages, models.ChatMessage{Role: "assistant", Content: completion.Answer})
+	if err := a.save(); err != nil {
+		conversation.messages = conversation.messages[:len(conversation.messages)-2]
+		return models.AgentResponse{}, ErrHistorySave
+	}
 	return models.AgentResponse{Answer: completion.Answer, Messages: copyMessages(conversation.messages)}, nil
 }
 
@@ -92,4 +120,17 @@ func (a *Agent) conversation(sessionID string) *conversation {
 
 func copyMessages(messages []models.ChatMessage) []models.ChatMessage {
 	return append([]models.ChatMessage(nil), messages...)
+}
+
+func (a *Agent) save() error {
+	if a.store == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sessions := make(map[string][]models.ChatMessage, len(a.sessions))
+	for id, conversation := range a.sessions {
+		sessions[id] = copyMessages(conversation.messages)
+	}
+	return a.store.Save(sessions)
 }
