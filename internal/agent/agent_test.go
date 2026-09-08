@@ -44,6 +44,27 @@ func TestPersistentAgentRestoresHistoryAfterRestart(t *testing.T) {
 	}
 }
 
+func TestClearRemovesPersistentSession(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "agent-history.json"))
+	first, err := NewPersistent(&fakeCompleter{answer: "Ответ"}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Respond(context.Background(), "session-a", "Сообщение"); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Clear("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.History("session-a"); len(got) != 0 {
+		t.Fatalf("history after clear = %#v, want empty", got)
+	}
+}
+
 func (f *fakeCompleter) CompleteMessages(_ context.Context, messages []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
 	f.requests = append(f.requests, append([]models.ChatMessage(nil), messages...))
 	if f.err != nil {
