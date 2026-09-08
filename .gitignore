@@ -9,6 +9,9 @@ ai-challenge-app
 !.env.example
 *.pem
 
+# Local dialogue history (lesson 7)
+.local/
+
 # Editor and OS files
 .DS_Store
 .idea/
