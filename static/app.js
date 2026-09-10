@@ -8,6 +8,7 @@ const agentForm = document.querySelector('#agent-form');
 const agentMessage = document.querySelector('#agent-message');
 const agentSubmit = document.querySelector('#agent-submit');
 const agentHistory = document.querySelector('#agent-history');
+const clearAgentHistory = document.querySelector('#clear-agent-history');
 const temperature = document.querySelector('#temperature');
 const topP = document.querySelector('#top-p');
 const maxTokens = document.querySelector('#max-tokens');
@@ -145,6 +146,28 @@ agentForm.addEventListener('submit', async (event) => {
     status.textContent = 'Ошибка';
   } finally {
     agentSubmit.disabled = false;
+  }
+});
+
+clearAgentHistory.addEventListener('click', async () => {
+  if (!window.confirm('Удалить все сообщения этого чата? Это действие нельзя отменить.')) return;
+  clearAgentHistory.disabled = true;
+  try {
+    const response = await fetch('/api/agent/chat', { method: 'DELETE', cache: 'no-store' });
+    const payload = await readAgentResponse(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось удалить историю диалога.');
+    renderAgentHistory(payload.messages);
+    answer.textContent = 'История этого чата удалена.';
+    answer.classList.remove('error');
+    status.textContent = 'Готово';
+    requestLog.textContent = 'БРАУЗЕР → BACKEND\nDELETE /api/agent/chat\n\nИстория текущей сессии удалена.';
+    agentMessage.focus();
+  } catch (error) {
+    answer.textContent = readableFetchError(error, 'Не удалось удалить историю диалога.');
+    answer.classList.add('error');
+    status.textContent = 'Ошибка';
+  } finally {
+    clearAgentHistory.disabled = false;
   }
 });
 

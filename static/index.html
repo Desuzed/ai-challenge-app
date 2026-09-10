@@ -17,7 +17,7 @@
         <section class="agent-chat" aria-labelledby="agent-title">
           <div class="answer-heading">
             <h2 id="agent-title">Чат с агентом</h2>
-            <span class="hint">История доступна только в этой сессии</span>
+	            <span class="hint">История сохраняется для этого браузера</span>
           </div>
           <div id="agent-history" class="agent-history" aria-live="polite">
             <p class="hint">История диалога появится здесь после первого сообщения.</p>
@@ -27,6 +27,10 @@
             <textarea id="agent-message" name="message" rows="3" maxlength="32000" autofocus></textarea>
             <button id="agent-submit" type="submit">Отправить агенту</button>
           </form>
+	          <div class="agent-actions">
+	            <button id="clear-agent-history" class="secondary-button" type="button">Удалить историю этого чата</button>
+	            <span class="hint">Удаляет сообщения только в текущем браузерном чате.</span>
+	          </div>
         </section>
 
         <details class="week-one">

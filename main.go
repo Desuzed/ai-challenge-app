@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	localEnvFile = ".env"
-	apiKeyEnvVar = "DEEPSEEK_API_KEY"
+	localEnvFile     = ".env"
+	apiKeyEnvVar     = "DEEPSEEK_API_KEY"
+	agentHistoryFile = ".local/agent-history.json"
 )
 
 func main() {
@@ -36,7 +37,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
 	handler := handlers.New(client)
-	handler.SetAgent(agent.New(client))
+	persistentAgent, err := agent.NewPersistent(client, agent.NewJSONStore(agentHistoryFile))
+	if err != nil {
+		log.Fatalf("load agent history: %v", err)
+	}
+	handler.SetAgent(persistentAgent)
 	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
 	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))

@@ -79,10 +79,17 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: h.agent.History(sessionID)})
 		return
+	case http.MethodDelete:
+		if err := h.agent.Clear(sessionID); err != nil {
+			writeAgentError(w, http.StatusInternalServerError, "Не удалось удалить историю диалога.")
+			return
+		}
+		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: []models.ChatMessage{}})
+		return
 	case http.MethodPost:
 	default:
-		w.Header().Set("Allow", "GET, POST")
-		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте GET или POST-запрос.")
+		w.Header().Set("Allow", "GET, POST, DELETE")
+		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте GET, POST или DELETE-запрос.")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
