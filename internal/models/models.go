@@ -18,8 +18,54 @@ type AgentRequest struct {
 }
 
 type AgentResponse struct {
-	Answer   string        `json:"answer"`
-	Messages []ChatMessage `json:"messages"`
+	Answer          string           `json:"answer"`
+	Messages        []ChatMessage    `json:"messages"`
+	RequestMessages []ChatMessage    `json:"requestMessages,omitempty"`
+	Tokens          AgentTokenReport `json:"tokens"`
+}
+
+// AgentTokenReport makes the cost of carrying a dialogue visible. Values named
+// "estimated" are calculated locally before a request; the other token counts
+// come from the provider's usage object after a successful request.
+type AgentTokenReport struct {
+	HistoryTokens          int     `json:"historyTokens"`
+	CurrentMessageTokens   int     `json:"currentMessageTokens"`
+	EstimatedRequestTokens int     `json:"estimatedRequestTokens"`
+	RequestTokens          int     `json:"requestTokens"`
+	ResponseTokens         int     `json:"responseTokens"`
+	ContextLimitTokens     int     `json:"contextLimitTokens"`
+	ReservedOutputTokens   int     `json:"reservedOutputTokens"`
+	RemainingContextTokens int     `json:"remainingContextTokens"`
+	CumulativeInputTokens  int     `json:"cumulativeInputTokens"`
+	CumulativeOutputTokens int     `json:"cumulativeOutputTokens"`
+	EstimatedCostUSD       float64 `json:"estimatedCostUsd"`
+	CumulativeCostUSD      float64 `json:"cumulativeCostUsd"`
+	CacheHitTokens         int     `json:"cacheHitTokens"`
+	CacheMissTokens        int     `json:"cacheMissTokens"`
+	EstimateNote           string  `json:"estimateNote"`
+}
+
+type TokenDemoRequest struct {
+	Scenario       string `json:"scenario"`
+	ForceCacheMiss bool   `json:"forceCacheMiss"`
+}
+
+// TokenDemoResult is an isolated, repeatable demonstration. It never changes
+// the browser chat history.
+type TokenDemoResult struct {
+	Scenario         string  `json:"scenario"`
+	Title            string  `json:"title"`
+	Answer           string  `json:"answer,omitempty"`
+	Blocked          bool    `json:"blocked"`
+	InputTokens      int     `json:"inputTokens"`
+	OutputTokens     int     `json:"outputTokens"`
+	TotalTokens      int     `json:"totalTokens"`
+	CacheHitTokens   int     `json:"cacheHitTokens"`
+	CacheMissTokens  int     `json:"cacheMissTokens"`
+	EstimatedCostUSD float64 `json:"estimatedCostUsd"`
+	ForceCacheMiss   bool    `json:"forceCacheMiss"`
+	Explanation      string  `json:"explanation"`
+	PromptPreview    string  `json:"promptPreview"`
 }
 
 type ResponseMode string
