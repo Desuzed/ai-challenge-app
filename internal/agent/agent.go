@@ -17,6 +17,7 @@ const maxMessageCharacters = 32000
 var ErrEmptyMessage = errors.New("Введите сообщение.")
 var ErrMessageTooLong = errors.New("Сообщение слишком длинное.")
 var ErrHistorySave = errors.New("Не удалось сохранить историю диалога.")
+var ErrContextLimit = errors.New("Диалог не отправлен: история вместе с резервом для ответа превышает контекстное окно модели. Очистите историю или попросите краткое резюме в новом чате.")
 
 type completer interface {
 	CompleteMessages(context.Context, []models.ChatMessage, models.GenerationSettings) (models.ModelCompletion, error)
@@ -25,6 +26,7 @@ type completer interface {
 type conversation struct {
 	mu       sync.Mutex
 	messages []models.ChatMessage
+	usages   []models.ModelUsage
 }
 
 type Agent struct {
@@ -86,6 +88,11 @@ func (a *Agent) Respond(ctx context.Context, sessionID, input string) (models.Ag
 	request := make([]models.ChatMessage, 0, len(conversation.messages)+1)
 	request = append(request, models.ChatMessage{Role: "system", Content: a.system})
 	request = append(request, conversation.messages...)
+	report := a.tokenReport(conversation, request, message, models.ModelUsage{})
+	if report.EstimatedRequestTokens+report.ReservedOutputTokens > report.ContextLimitTokens {
+		conversation.messages = conversation.messages[:len(conversation.messages)-1]
+		return models.AgentResponse{}, ErrContextLimit
+	}
 	completion, err := a.client.CompleteMessages(ctx, request, a.settings)
 	if err != nil {
 		// Do not retain an unanswered user message: the next attempt is a clean retry.
@@ -93,11 +100,14 @@ func (a *Agent) Respond(ctx context.Context, sessionID, input string) (models.Ag
 		return models.AgentResponse{}, err
 	}
 	conversation.messages = append(conversation.messages, models.ChatMessage{Role: "assistant", Content: completion.Answer})
+	conversation.usages = append(conversation.usages, completion.Usage)
 	if err := a.save(); err != nil {
 		conversation.messages = conversation.messages[:len(conversation.messages)-2]
+		conversation.usages = conversation.usages[:len(conversation.usages)-1]
 		return models.AgentResponse{}, ErrHistorySave
 	}
-	return models.AgentResponse{Answer: completion.Answer, Messages: copyMessages(conversation.messages)}, nil
+	report = a.tokenReport(conversation, request, message, completion.Usage)
+	return models.AgentResponse{Answer: completion.Answer, Messages: copyMessages(conversation.messages), RequestMessages: copyMessages(request), Tokens: report}, nil
 }
 
 func (a *Agent) History(sessionID string) []models.ChatMessage {
@@ -105,6 +115,43 @@ func (a *Agent) History(sessionID string) []models.ChatMessage {
 	conversation.mu.Lock()
 	defer conversation.mu.Unlock()
 	return copyMessages(conversation.messages)
+}
+
+// TokenReport is useful on page reloads too: it shows the estimated size of
+// restored history even though historical provider usage is not persisted.
+func (a *Agent) TokenReport(sessionID string) models.AgentTokenReport {
+	conversation := a.conversation(sessionID)
+	conversation.mu.Lock()
+	defer conversation.mu.Unlock()
+	request := append([]models.ChatMessage{{Role: "system", Content: a.system}}, conversation.messages...)
+	return a.tokenReport(conversation, request, "", models.ModelUsage{})
+}
+
+func (a *Agent) tokenReport(conversation *conversation, request []models.ChatMessage, current string, usage models.ModelUsage) models.AgentTokenReport {
+	// The system instruction is sent on every request, but it is agent
+	// configuration rather than dialogue history. The displayed history is the
+	// complete saved conversation, including the just-generated answer.
+	history := conversation.messages
+	report := models.AgentTokenReport{
+		HistoryTokens: estimateDialogueHistoryTokens(history), CurrentMessageTokens: estimateMessageTokens(models.ChatMessage{Role: "user", Content: current}),
+		EstimatedRequestTokens: estimateMessagesTokens(request), RequestTokens: usage.InputTokens, ResponseTokens: usage.OutputTokens,
+		ContextLimitTokens: contextLimitTokens, ReservedOutputTokens: a.settings.MaxTokens, EstimateNote: estimateNote,
+		CacheHitTokens: usage.CacheHitTokens, CacheMissTokens: usage.CacheMissTokens,
+	}
+	if current == "" {
+		report.CurrentMessageTokens = 0
+	}
+	report.RemainingContextTokens = contextLimitTokens - report.EstimatedRequestTokens - report.ReservedOutputTokens
+	if report.RemainingContextTokens < 0 {
+		report.RemainingContextTokens = 0
+	}
+	for _, item := range conversation.usages {
+		report.CumulativeInputTokens += item.InputTokens
+		report.CumulativeOutputTokens += item.OutputTokens
+		report.CumulativeCostUSD += usageCost(item)
+	}
+	report.EstimatedCostUSD = usageCost(usage)
+	return report
 }
 
 // Clear removes one browser session from memory and durable storage.
