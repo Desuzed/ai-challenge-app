@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -46,11 +47,16 @@ type openRouterCompleter interface {
 	Complete(context.Context, openrouter.Candidate, string, string) (models.ModelCompletion, error)
 }
 
+type tokenDemoCompleter interface {
+	CompleteMessages(context.Context, []models.ChatMessage, models.GenerationSettings) (models.ModelCompletion, error)
+}
+
 type Handler struct {
 	client              completer
 	reasoningClient     reasoningCompleter
 	modelVersionsClient modelVersionsCompleter
 	openRouterClient    openRouterCompleter
+	tokenDemoClient     tokenDemoCompleter
 	agent               *agent.Agent
 }
 
@@ -60,7 +66,95 @@ func (h *Handler) SetAgent(value *agent.Agent)                    { h.agent = va
 func New(client completer) *Handler {
 	reasoningClient, _ := client.(reasoningCompleter)
 	modelVersionsClient, _ := client.(modelVersionsCompleter)
-	return &Handler{client: client, reasoningClient: reasoningClient, modelVersionsClient: modelVersionsClient}
+	tokenDemoClient, _ := client.(tokenDemoCompleter)
+	return &Handler{client: client, reasoningClient: reasoningClient, modelVersionsClient: modelVersionsClient, tokenDemoClient: tokenDemoClient}
+}
+
+const tokenDemoTask = "Возьми число 1250, вычти 10% от него и прибавь 250. Назови только итоговое число."
+
+const tokenDemoSystem = "Ты решаешь учебную задачу. Отвечай по-русски, точно и одной короткой строкой."
+
+// TokenDemo runs isolated requests with identical final data. Long context adds
+// only earlier turns, making the token difference attributable to history.
+func (h *Handler) TokenDemo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте POST-запрос.")
+		return
+	}
+	if h.tokenDemoClient == nil {
+		writeAgentError(w, http.StatusServiceUnavailable, "Демонстрация токенов сейчас недоступна.")
+		return
+	}
+	var input models.TokenDemoRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input); err != nil {
+		writeAgentError(w, http.StatusBadRequest, "Не удалось прочитать сценарий.")
+		return
+	}
+	if input.Scenario == "overflow" {
+		writeJSON(w, http.StatusOK, models.TokenDemoResult{Scenario: input.Scenario, Title: "Диалог больше лимита", Blocked: true, InputTokens: 999700, TotalTokens: 1000212, ForceCacheMiss: input.ForceCacheMiss, Explanation: "999 700 токенов истории + резерв 512 токенов для ответа превышают контекст 1 000 000. Агент не вызывает модель и не сохраняет новую реплику.", PromptPreview: tokenDemoPreview(input.Scenario, input.ForceCacheMiss)})
+		return
+	}
+	if input.Scenario != "short" && input.Scenario != "long" {
+		writeAgentError(w, http.StatusBadRequest, "Неизвестный сценарий.")
+		return
+	}
+	messages := tokenDemoMessages(input.Scenario, input.ForceCacheMiss)
+	temperature := 0.0
+	completion, err := h.tokenDemoClient.CompleteMessages(r.Context(), messages, models.GenerationSettings{Temperature: &temperature, MaxTokens: 96})
+	if err != nil {
+		status, message := errorResponse(err)
+		writeAgentError(w, status, message)
+		return
+	}
+	usage := completion.Usage
+	result := models.TokenDemoResult{Scenario: input.Scenario, Title: map[string]string{"short": "Короткий диалог", "long": "Длинный диалог"}[input.Scenario], Answer: completion.Answer, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, TotalTokens: usage.TotalTokens, CacheHitTokens: usage.CacheHitTokens, CacheMissTokens: usage.CacheMissTokens, ForceCacheMiss: input.ForceCacheMiss, EstimatedCostUSD: demoUsageCost(usage), PromptPreview: tokenDemoPreview(input.Scenario, input.ForceCacheMiss)}
+	if input.Scenario == "short" {
+		result.Explanation = "В модель ушла системная инструкция и одна тестовая задача. Это базовая точка сравнения."
+	} else {
+		result.Explanation = "Финальная задача та же, но перед ней добавлена длинная история. Поэтому входных токенов и стоимость больше."
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func tokenDemoMessages(scenario string, forceCacheMiss bool) []models.ChatMessage {
+	system := tokenDemoSystem
+	if forceCacheMiss {
+		// DeepSeek does not expose a cache-off flag. A unique first message means
+		// this request cannot reuse a previously persisted matching prefix.
+		system += fmt.Sprintf("\nУникальный маркер эксперимента: %d", time.Now().UnixNano())
+	}
+	messages := []models.ChatMessage{{Role: "system", Content: system}}
+	if scenario == "long" {
+		filler := "В этой учебной переписке повторяются числа 1250, 10% и 250. Сохраняй контекст, но пока не вычисляй финальный ответ."
+		for i := 0; i < 80; i++ {
+			messages = append(messages, models.ChatMessage{Role: "user", Content: filler}, models.ChatMessage{Role: "assistant", Content: "Контекст сохранён для учебного сравнения токенов."})
+		}
+	}
+	return append(messages, models.ChatMessage{Role: "user", Content: tokenDemoTask})
+}
+
+func tokenDemoPreview(scenario string, forceCacheMiss bool) string {
+	system := tokenDemoSystem
+	if forceCacheMiss {
+		system += "\n[Добавлен уникальный маркер: cache hit исключён.]"
+	}
+	preview := "Системное сообщение:\n" + system + "\n\n"
+	if scenario == "long" {
+		preview += "80 предыдущих пар реплик:\nПользователь: В этой учебной переписке повторяются числа 1250, 10% и 250. Сохраняй контекст, но пока не вычисляй финальный ответ.\nАгент: Контекст сохранён для учебного сравнения токенов.\n\n(эта пара повторяется 80 раз)\n\n"
+	}
+	if scenario == "overflow" {
+		return preview + "999 700 токенов истории (текст намеренно не создаётся)\n\nНовая реплика: " + tokenDemoTask
+	}
+	return preview + "Новая реплика пользователя:\n" + tokenDemoTask
+}
+
+func demoUsageCost(usage models.ModelUsage) float64 {
+	miss := usage.CacheMissTokens
+	if miss == 0 {
+		miss = usage.InputTokens - usage.CacheHitTokens
+	}
+	return float64(usage.CacheHitTokens)*0.014/1_000_000 + float64(miss)*0.44/1_000_000 + float64(usage.OutputTokens)*1.32/1_000_000
 }
 
 // AgentChat keeps HTTP concerns thin: dialogue history and model settings are
@@ -77,14 +171,14 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: h.agent.History(sessionID)})
+		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: h.agent.History(sessionID), Tokens: h.agent.TokenReport(sessionID)})
 		return
 	case http.MethodDelete:
 		if err := h.agent.Clear(sessionID); err != nil {
 			writeAgentError(w, http.StatusInternalServerError, "Не удалось удалить историю диалога.")
 			return
 		}
-		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: []models.ChatMessage{}})
+		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: []models.ChatMessage{}, Tokens: h.agent.TokenReport(sessionID)})
 		return
 	case http.MethodPost:
 	default:
@@ -111,6 +205,10 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) {
 			writeAgentError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, agent.ErrContextLimit) {
+			writeAgentError(w, http.StatusRequestEntityTooLarge, err.Error())
 			return
 		}
 		status, message := errorResponse(err)
