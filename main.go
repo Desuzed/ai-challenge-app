@@ -47,6 +47,7 @@ func main() {
 	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))
 	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
 	mux.Handle("/api/agent/chat", http.HandlerFunc(handler.AgentChat))
+	mux.Handle("/api/agent/token-demo", http.HandlerFunc(handler.TokenDemo))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
