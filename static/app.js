@@ -9,6 +9,14 @@ const agentMessage = document.querySelector('#agent-message');
 const agentSubmit = document.querySelector('#agent-submit');
 const agentHistory = document.querySelector('#agent-history');
 const clearAgentHistory = document.querySelector('#clear-agent-history');
+const tokenMetrics = document.querySelector('#token-metrics');
+const tokenState = document.querySelector('#token-state');
+const tokenTotal = document.querySelector('#token-total');
+const tokenNote = document.querySelector('#token-note');
+const tokenLabResults = document.querySelector('#token-lab-results');
+const forceCacheMiss = document.querySelector('#force-cache-miss');
+const tokenDemoButtons = Array.from(document.querySelectorAll('.token-demo-button'));
+const agentRunResult = document.querySelector('#agent-run-result');
 const temperature = document.querySelector('#temperature');
 const topP = document.querySelector('#top-p');
 const maxTokens = document.querySelector('#max-tokens');
@@ -67,6 +75,92 @@ let reasoningTask = '';
 let temperatureTask = '';
 let savedMaxTokens = maxTokens.value;
 
+function number(value) { return new Intl.NumberFormat('ru-RU').format(value || 0); }
+function dollars(value) { return `$${(value || 0).toFixed(value > 0 && value < 0.0001 ? 6 : 4)}`; }
+
+function renderTokenReport(tokens, messages) {
+  if (!tokens) {
+    tokenState.textContent = 'Сервер не передал данные о токенах. Перезапустите приложение, чтобы применить обновление.';
+    tokenNote.textContent = '';
+    return;
+  }
+  const chatIsEmpty = Array.isArray(messages) ? messages.length === 0 : tokens.historyTokens === 0 && tokens.cumulativeInputTokens === 0 && tokens.cumulativeOutputTokens === 0;
+  if (chatIsEmpty) {
+    tokenMetrics.replaceChildren();
+    tokenState.textContent = 'Чат пуст.';
+    tokenTotal.textContent = 'Отправьте первое сообщение — после ответа здесь появятся три счётчика из задания.';
+    tokenNote.textContent = '';
+    return;
+  }
+  const input = tokens.requestTokens > 0 ? `точно ${number(tokens.requestTokens)}` : `оценка ${number(tokens.estimatedRequestTokens)}`;
+  const values = [
+    [input, '1. Текущий запрос к модели (prompt_tokens): системная инструкция + вся история + новое сообщение'],
+    [number(tokens.historyTokens), '2. Вся история диалога: только сохранённые реплики пользователя и агента'],
+    [number(tokens.responseTokens), '3. Ответ модели (completion_tokens): сколько токенов сгенерировала модель'],
+  ];
+  tokenMetrics.replaceChildren(...values.map(([value, label]) => {
+    const item = document.createElement('div'); item.className = 'token-metric';
+    const main = document.createElement('strong'); main.textContent = value;
+    const caption = document.createElement('span'); caption.textContent = label;
+    item.append(main, caption); return item;
+  }));
+  tokenState.textContent = `Осталось примерно ${number(tokens.remainingContextTokens)} из ${number(tokens.contextLimitTokens)} токенов`;
+  tokenTotal.textContent = `За всю текущую сессию: модель уже получила ${number(tokens.cumulativeInputTokens)} входных токенов, сгенерировала ${number(tokens.cumulativeOutputTokens)} выходных; ориентировочная стоимость — ${dollars(tokens.cumulativeCostUsd)}.`;
+  tokenNote.textContent = tokens.estimateNote || '';
+}
+
+function renderDemoResult(result) {
+  const item = document.createElement('article'); item.className = `token-scenario${result.blocked ? ' token-scenario-overflow' : ''}`;
+  const title = document.createElement('strong'); title.textContent = result.title;
+  const value = document.createElement('span');
+  value.textContent = result.blocked ? `Заблокирован до API: ${number(result.inputTokens)} + 512 > 1 000 000 токенов` : `Фактически: ${number(result.inputTokens)} входных + ${number(result.outputTokens)} выходных = ${number(result.totalTokens)} токенов · ${dollars(result.estimatedCostUsd)}`;
+  const details = document.createElement('p');
+  const cache = result.forceCacheMiss ? 'Cache принудительно обойдён уникальным маркером.' : `Cache DeepSeek: hit ${number(result.cacheHitTokens)}, miss ${number(result.cacheMissTokens)}.`;
+  details.textContent = `${result.explanation} ${cache}`;
+  item.append(title, value, details);
+  if (result.answer) { const answer = document.createElement('p'); answer.textContent = `Ответ модели: ${result.answer}`; item.append(answer); }
+  if (result.promptPreview) {
+    const dialogue = document.createElement('details');
+    const summary = document.createElement('summary'); summary.textContent = 'Показать запрос и ответ модели';
+    const prompt = document.createElement('pre'); prompt.className = 'token-prompt-preview';
+    prompt.textContent = result.promptPreview + (result.answer ? `\n\nОтвет модели:\n${result.answer}` : '');
+    dialogue.append(summary, prompt); item.append(dialogue);
+  }
+  tokenLabResults.replaceChildren(item);
+}
+
+function renderAgentRun(payload) {
+  if (!payload.requestMessages || !payload.tokens) return;
+  const item = document.createElement('article'); item.className = 'token-scenario';
+  const title = document.createElement('strong'); title.textContent = 'Результат вашего сообщения';
+  const value = document.createElement('span');
+  value.textContent = `Фактически: ${number(payload.tokens.requestTokens)} входных + ${number(payload.tokens.responseTokens)} выходных = ${number(payload.tokens.requestTokens + payload.tokens.responseTokens)} токенов · ${dollars(payload.tokens.estimatedCostUsd)}`;
+  const cache = document.createElement('p');
+  cache.textContent = `Cache DeepSeek: hit ${number(payload.tokens.cacheHitTokens)}, miss ${number(payload.tokens.cacheMissTokens)}.`;
+  const dialogue = document.createElement('details');
+  const summary = document.createElement('summary'); summary.textContent = 'Показать запрос и ответ модели';
+  const lines = payload.requestMessages.map((message) => `${message.role === 'system' ? 'Система' : message.role === 'user' ? 'Вы' : 'Агент'}:\n${message.content}`);
+  lines.push(`Ответ модели:\n${payload.answer}`);
+  const prompt = document.createElement('pre'); prompt.className = 'token-prompt-preview'; prompt.textContent = lines.join('\n\n');
+  dialogue.append(summary, prompt); item.append(title, value, cache, dialogue);
+  agentRunResult.replaceChildren(item); agentRunResult.hidden = false;
+}
+
+async function runTokenDemo(scenario) {
+  tokenDemoButtons.forEach((button) => { button.disabled = true; });
+  tokenLabResults.textContent = 'Запускаем сценарий…';
+  try {
+    const response = await fetch('/api/agent/token-demo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario, forceCacheMiss: forceCacheMiss.checked }) });
+    const payload = await readAgentResponse(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось выполнить сценарий.');
+    renderDemoResult(payload);
+  } catch (error) {
+    tokenLabResults.textContent = readableFetchError(error, 'Не удалось выполнить сценарий. Перезапустите приложение.');
+  } finally {
+    tokenDemoButtons.forEach((button) => { button.disabled = false; });
+  }
+}
+
 function renderAgentHistory(messages) {
   agentHistory.replaceChildren();
   if (!messages || messages.length === 0) {
@@ -105,9 +199,9 @@ async function loadAgentHistory() {
   try {
     const response = await fetch('/api/agent/chat', { cache: 'no-store' });
     const payload = await readAgentResponse(response);
-    if (response.ok) renderAgentHistory(payload.messages);
+    if (response.ok) { renderAgentHistory(payload.messages); renderTokenReport(payload.tokens, payload.messages); }
   } catch (_) {
-    // The chat remains usable; the submit path will show a concrete error.
+    tokenState.textContent = 'Не удалось получить данные чата.';
   }
 }
 
@@ -136,6 +230,8 @@ agentForm.addEventListener('submit', async (event) => {
     if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ агента.');
     requestLog.textContent += `\n\nОТВЕТ АГЕНТА\n${payload.answer}`;
     renderAgentHistory(payload.messages);
+    renderTokenReport(payload.tokens, payload.messages);
+    renderAgentRun(payload);
     answer.textContent = payload.answer;
     status.textContent = 'Готово';
     agentMessage.value = '';
@@ -157,6 +253,8 @@ clearAgentHistory.addEventListener('click', async () => {
     const payload = await readAgentResponse(response);
     if (!response.ok) throw new Error(payload.error || 'Не удалось удалить историю диалога.');
     renderAgentHistory(payload.messages);
+    renderTokenReport(payload.tokens, payload.messages);
+    agentRunResult.replaceChildren(); agentRunResult.hidden = true;
     answer.textContent = 'История этого чата удалена.';
     answer.classList.remove('error');
     status.textContent = 'Готово';
@@ -170,6 +268,8 @@ clearAgentHistory.addEventListener('click', async () => {
     clearAgentHistory.disabled = false;
   }
 });
+
+tokenDemoButtons.forEach((button) => button.addEventListener('click', () => runTokenDemo(button.dataset.tokenScenario)));
 
 function activeTabName() {
   return tabList.dataset.activeTab;

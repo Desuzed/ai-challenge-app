@@ -15,6 +15,17 @@ h1 { margin: 6px 0; font-size: clamp(1.8rem, 5vw, 2.5rem); } h2 { margin: 0; fon
 .agent-message p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
 .agent-message-user { justify-self: end; border-color: #9db5f4; background: #edf3ff; }
 .agent-message-assistant { justify-self: start; }
+.token-panel { display: grid; gap: 10px; padding: 14px; border: 1px solid #cbd9ff; border-radius: 10px; background: #f6f8ff; }
+.token-panel h3 { margin: 0; font-size: 1rem; }
+.token-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.token-metric { padding: 10px; border: 1px solid #d7e1ef; border-radius: 8px; background: #fff; }
+.token-metric strong, .token-metric span { display: block; }.token-metric strong { color: #28457d; font-size: 1.1rem; }.token-metric span { margin-top: 3px; color: #526174; font-size: .78rem; }
+.token-total { margin: 0; padding: 9px 10px; border-radius: 8px; background: #fff; color: #526174; font-size: .85rem; line-height: 1.45; }
+.token-lab { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding-top: 10px; border-top: 1px solid #d7e1ef; }.token-lab p { margin: 4px 0 0; }
+.token-demo-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }.token-demo-actions button { margin: 0; }
+.token-lab .inline-option { justify-self: start; align-items: flex-start; line-height: 1.35; }
+.token-prompt-preview { margin: 8px 0 0; padding: 10px; border-radius: 7px; background: #f4f7fb; white-space: pre-wrap; overflow-wrap: anywhere; font: .8rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.token-lab-results { grid-column: 1 / -1; display: grid; gap: 7px; }.token-scenario { display: grid; grid-template-columns: minmax(100px, 1fr) auto; gap: 4px 12px; padding: 9px 10px; border-radius: 8px; background: #fff; border: 1px solid #d7e1ef; font-size: .86rem; }.token-scenario p { grid-column: 1 / -1; margin: 0; color: #526174; line-height: 1.35; }.token-scenario-overflow { border-color: #d66; background: #fff7f7; }
 .week-one { display: grid; gap: 14px; margin-top: 24px; padding-top: 18px; border-top: 1px solid #d7e1ef; }
 .week-one[open] summary { margin-bottom: 0; }
 .week-one > summary { font-size: 1.05rem; }
@@ -124,5 +135,5 @@ button:hover { background: #234cb9; } button:disabled { cursor: wait; opacity: .
 #request-log { margin: 16px 0 0; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; background: #111827; color: #d1fae5; font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .error { color: #b42318; }
 @media (prefers-reduced-motion: reduce) { .lesson-tab-indicator { transition: none; } }
-@media (max-width: 700px) { .temperature-settings, .temperature-guidance-grid, .temperature-results { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .temperature-settings, .temperature-guidance-grid, .temperature-results, .token-metrics { grid-template-columns: 1fr; } .token-lab { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .container { margin: 20px auto; } .card { padding: 20px; } .lesson-tab { padding-inline: 4px; font-size: .8rem; line-height: 1.15; overflow-wrap: anywhere; } .range-row { grid-template-columns: 1fr; } .range-row small { grid-column: 1; } .reasoning-modes label { grid-template-columns: auto minmax(0, 1fr); } .reasoning-modes em { grid-column: 2; justify-self: start; } .reasoning-result-heading, .temperature-result-heading { align-items: flex-start; flex-direction: column; } }

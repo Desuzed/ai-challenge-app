@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
     <title>AI Challenge App</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=day8-token-demo-4">
   </head>
   <body>
     <main class="container">
       <section class="card" aria-labelledby="title">
-        <p class="eyebrow">Урок 6 · Первый агент</p>
+        <p class="eyebrow">AI Challenge · День 8</p>
         <h1 id="title">AI Challenge App</h1>
         <p class="intro">Диалоговый агент сам хранит историю текущей сессии, собирает сообщения и обращается к LLM. Его настройки и системная инструкция остаются внутри агента.</p>
 
@@ -22,11 +22,29 @@
           <div id="agent-history" class="agent-history" aria-live="polite">
             <p class="hint">История диалога появится здесь после первого сообщения.</p>
           </div>
+          <section class="token-panel" aria-labelledby="token-title">
+            <div class="answer-heading"><h3 id="token-title">Токены в этом чате</h3><span id="token-state" class="hint">Получаем данные чата…</span></div>
+            <p class="hint">После каждого ответа здесь будут три счётчика из задания: текущий запрос, вся история и ответ модели.</p>
+            <div id="token-metrics" class="token-metrics" aria-live="polite"></div>
+            <p id="token-total" class="token-total" aria-live="polite"></p>
+            <p id="token-note" class="hint"></p>
+            <div class="token-lab" aria-labelledby="token-lab-title">
+              <div><strong id="token-lab-title">Три готовых примера для сравнения</strong><p class="hint">Это отдельные от вашего чата запуски на одинаковой задаче. Короткий и длинный сценарии вызывают модель и покажут фактические токены; сценарий лимита безопасно остановится до API.</p></div>
+              <label class="inline-option"><input id="force-cache-miss" type="checkbox" checked><span>Не использовать cache:<br>добавить уникальный маркер к каждому запуску</span></label>
+              <div class="token-demo-actions" role="group" aria-label="Сценарии демонстрации токенов">
+                <button class="secondary-button token-demo-button" type="button" data-token-scenario="short">1. Короткий диалог</button>
+                <button class="secondary-button token-demo-button" type="button" data-token-scenario="long">2. Длинный диалог</button>
+                <button class="secondary-button token-demo-button" type="button" data-token-scenario="overflow">3. Больше лимита</button>
+              </div>
+              <div id="token-lab-results" class="token-lab-results"></div>
+            </div>
+          </section>
           <form id="agent-form">
             <label for="agent-message">Ваше сообщение</label>
             <textarea id="agent-message" name="message" rows="3" maxlength="32000" autofocus></textarea>
             <button id="agent-submit" type="submit">Отправить агенту</button>
           </form>
+          <div id="agent-run-result" class="token-lab-results" hidden aria-live="polite"></div>
 	          <div class="agent-actions">
 	            <button id="clear-agent-history" class="secondary-button" type="button">Удалить историю этого чата</button>
 	            <span class="hint">Удаляет сообщения только в текущем браузерном чате.</span>
@@ -285,6 +303,6 @@
         <pre id="request-log">Журнал появится после отправки вопроса.</pre>
       </details>
     </main>
-    <script src="app.js"></script>
+    <script src="app.js?v=day8-token-demo-4"></script>
   </body>
 </html>
