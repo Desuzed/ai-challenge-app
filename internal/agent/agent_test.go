@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ai-challenge-app/internal/models"
@@ -14,6 +15,7 @@ type fakeCompleter struct {
 	requests [][]models.ChatMessage
 	answer   string
 	err      error
+	usage    models.ModelUsage
 }
 
 func TestPersistentAgentRestoresHistoryAfterRestart(t *testing.T) {
@@ -70,7 +72,58 @@ func (f *fakeCompleter) CompleteMessages(_ context.Context, messages []models.Ch
 	if f.err != nil {
 		return models.ModelCompletion{}, f.err
 	}
-	return models.ModelCompletion{Answer: f.answer}, nil
+	return models.ModelCompletion{Answer: f.answer, Usage: f.usage}, nil
+}
+
+func TestRespondReportsExactProviderUsageAndCumulativeCost(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ", usage: models.ModelUsage{InputTokens: 120, OutputTokens: 30, CacheMissTokens: 120}}
+	agent := New(client)
+	result, err := agent.Respond(context.Background(), "session", "Короткий вопрос")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Tokens.RequestTokens != 120 || result.Tokens.ResponseTokens != 30 || result.Tokens.CumulativeInputTokens != 120 || result.Tokens.CumulativeOutputTokens != 30 {
+		t.Fatalf("tokens = %#v", result.Tokens)
+	}
+	if result.Tokens.EstimatedRequestTokens == 0 || result.Tokens.CurrentMessageTokens == 0 || result.Tokens.CumulativeCostUSD <= 0 {
+		t.Fatalf("incomplete token report = %#v", result.Tokens)
+	}
+	if result.Tokens.CacheMissTokens != 120 || len(result.RequestMessages) != 2 || result.RequestMessages[1].Content != "Короткий вопрос" {
+		t.Fatalf("request details = %#v, tokens = %#v", result.RequestMessages, result.Tokens)
+	}
+}
+
+func TestRespondRejectsDialogueBeyondContextBeforeProviderCall(t *testing.T) {
+	client := &fakeCompleter{answer: "Не должен вызываться"}
+	agent := New(client)
+	conversation := agent.conversation("session")
+	conversation.messages = make([]models.ChatMessage, 100)
+	for i := range conversation.messages {
+		conversation.messages[i] = models.ChatMessage{Role: "user", Content: strings.Repeat("я", maxMessageCharacters)}
+	}
+	if _, err := agent.Respond(context.Background(), "session", "Ещё один вопрос"); !errors.Is(err, ErrContextLimit) {
+		t.Fatalf("Respond error = %v, want ErrContextLimit", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("provider requests = %d, want 0", len(client.requests))
+	}
+	if got := len(agent.History("session")); got != 100 {
+		t.Fatalf("history length = %d, want 100; rejected message must not persist", got)
+	}
+}
+
+func TestTokenReportDoesNotCountSystemInstructionAsDialogueHistory(t *testing.T) {
+	agent := New(&fakeCompleter{})
+	if err := agent.Clear("session"); err != nil {
+		t.Fatal(err)
+	}
+	report := agent.TokenReport("session")
+	if report.HistoryTokens != 0 || report.CurrentMessageTokens != 0 {
+		t.Fatalf("cleared dialogue tokens = %#v, want zero", report)
+	}
+	if report.EstimatedRequestTokens == 0 {
+		t.Fatal("system instruction must remain in full request estimate")
+	}
 }
 
 func TestRespondBuildsHistoryPerSession(t *testing.T) {
