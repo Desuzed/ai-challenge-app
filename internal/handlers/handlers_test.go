@@ -27,6 +27,45 @@ type fakeClient struct {
 	catalog           []string
 	modelCalls        []string
 	modelPrompt       string
+	messageRequests   [][]models.ChatMessage
+	messageUsage      models.ModelUsage
+}
+
+func (f *fakeClient) CompleteMessages(_ context.Context, messages []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
+	f.messageRequests = append(f.messageRequests, append([]models.ChatMessage(nil), messages...))
+	return models.ModelCompletion{Answer: f.answer, Usage: f.messageUsage}, f.err
+}
+
+func TestTokenDemoUsesSameFinalTaskAndCanForceCacheMiss(t *testing.T) {
+	client := &fakeClient{answer: "Итог: 1 375 ₽", messageUsage: models.ModelUsage{InputTokens: 900, OutputTokens: 12, CacheMissTokens: 900}}
+	handler := New(client)
+	short := httptest.NewRecorder()
+	handler.TokenDemo(short, httptest.NewRequest(http.MethodPost, "/api/agent/token-demo", strings.NewReader(`{"scenario":"short","forceCacheMiss":true}`)))
+	long := httptest.NewRecorder()
+	handler.TokenDemo(long, httptest.NewRequest(http.MethodPost, "/api/agent/token-demo", strings.NewReader(`{"scenario":"long","forceCacheMiss":true}`)))
+	if short.Code != http.StatusOK || long.Code != http.StatusOK || len(client.messageRequests) != 2 {
+		t.Fatalf("statuses %d/%d, calls %d", short.Code, long.Code, len(client.messageRequests))
+	}
+	for _, request := range client.messageRequests {
+		if got := request[len(request)-1].Content; got != tokenDemoTask {
+			t.Fatalf("final task = %q", got)
+		}
+		if !strings.Contains(request[0].Content, "Уникальный маркер") {
+			t.Fatalf("unique cache-bypass marker missing: %q", request[0].Content)
+		}
+	}
+	if len(client.messageRequests[1]) <= len(client.messageRequests[0]) {
+		t.Fatal("long scenario did not add history")
+	}
+}
+
+func TestTokenDemoOverflowDoesNotCallModel(t *testing.T) {
+	client := &fakeClient{}
+	recorder := httptest.NewRecorder()
+	New(client).TokenDemo(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/token-demo", strings.NewReader(`{"scenario":"overflow"}`)))
+	if recorder.Code != http.StatusOK || len(client.messageRequests) != 0 {
+		t.Fatalf("status %d, calls %d", recorder.Code, len(client.messageRequests))
+	}
 }
 
 func (f *fakeClient) Complete(_ context.Context, prompt string, mode models.ResponseMode, settings models.GenerationSettings) (string, string, error) {
