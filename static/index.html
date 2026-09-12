@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
     <title>AI Challenge App</title>
-    <link rel="stylesheet" href="style.css?v=day8-token-demo-4">
+    <link rel="stylesheet" href="style.css?v=day9-context-compression-2">
   </head>
   <body>
     <main class="container">
       <section class="card" aria-labelledby="title">
-        <p class="eyebrow">AI Challenge · День 8</p>
+        <p class="eyebrow">AI Challenge · День 9</p>
         <h1 id="title">AI Challenge App</h1>
-        <p class="intro">Диалоговый агент сам хранит историю текущей сессии, собирает сообщения и обращается к LLM. Его настройки и системная инструкция остаются внутри агента.</p>
+        <p class="intro">Агент хранит последние реплики как есть, а раннюю часть сжимает в отдельное резюме. В запрос к LLM попадают резюме и последние N сообщений.</p>
 
         <section class="agent-chat" aria-labelledby="agent-title">
           <div class="answer-heading">
@@ -22,12 +22,31 @@
           <div id="agent-history" class="agent-history" aria-live="polite">
             <p class="hint">История диалога появится здесь после первого сообщения.</p>
           </div>
+          <section class="compression-panel" aria-labelledby="compression-title">
+            <div><h3 id="compression-title">Сжатие истории</h3><p class="hint">N — сколько последних сообщений хранить полностью. Всё, что старше, заменяется резюме и сохраняется отдельно от переписки.</p></div>
+            <label for="recent-messages">Последних сообщений (N)</label>
+            <input id="recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
+            <p id="compression-state" class="hint">Пока резюме не создано.</p>
+            <details id="conversation-summary" hidden><summary>Показать сохранённое резюме</summary><pre id="conversation-summary-text" class="token-prompt-preview"></pre></details>
+            <div class="recent-demo" aria-labelledby="recent-demo-title">
+              <div><strong id="recent-demo-title">Песочница: как влияет N</strong><p class="hint">Выберите N от 2 до 12 и запустите разбор инцидента в маркетплейсе с Android/iOS. Ваш чат и его summary не меняются.</p></div>
+              <label for="recent-demo-n">N в примере</label>
+              <input id="recent-demo-n" type="number" min="2" max="12" value="4" inputmode="numeric">
+              <button id="run-recent-demo" class="secondary-button" type="button">Запустить пример N</button>
+              <div id="recent-demo-results" class="recent-demo-results" aria-live="polite"></div>
+            </div>
+          </section>
           <section class="token-panel" aria-labelledby="token-title">
             <div class="answer-heading"><h3 id="token-title">Токены в этом чате</h3><span id="token-state" class="hint">Получаем данные чата…</span></div>
             <p class="hint">После каждого ответа здесь будут три счётчика из задания: текущий запрос, вся история и ответ модели.</p>
             <div id="token-metrics" class="token-metrics" aria-live="polite"></div>
             <p id="token-total" class="token-total" aria-live="polite"></p>
             <p id="token-note" class="hint"></p>
+            <div class="context-lab" aria-labelledby="context-lab-title">
+              <div><strong id="context-lab-title">Прогон: без сжатия vs со сжатием</strong><p class="hint">Два реальных вызова модели разбирают один инцидент маркетплейса. Сравните точность вывода и фактические входные токены.</p></div>
+              <button id="run-context-demo" class="secondary-button" type="button">Запустить сравнение</button>
+              <div id="context-demo-results" class="context-demo-results" aria-live="polite"></div>
+            </div>
             <div class="token-lab" aria-labelledby="token-lab-title">
               <div><strong id="token-lab-title">Три готовых примера для сравнения</strong><p class="hint">Это отдельные от вашего чата запуски на одинаковой задаче. Короткий и длинный сценарии вызывают модель и покажут фактические токены; сценарий лимита безопасно остановится до API.</p></div>
               <label class="inline-option"><input id="force-cache-miss" type="checkbox" checked><span>Не использовать cache:<br>добавить уникальный маркер к каждому запуску</span></label>
@@ -303,6 +322,6 @@
         <pre id="request-log">Журнал появится после отправки вопроса.</pre>
       </details>
     </main>
-    <script src="app.js?v=day8-token-demo-4"></script>
+    <script src="app.js?v=day9-marketplace-incident-4"></script>
   </body>
 </html>
