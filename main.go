@@ -48,6 +48,8 @@ func main() {
 	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
 	mux.Handle("/api/agent/chat", http.HandlerFunc(handler.AgentChat))
 	mux.Handle("/api/agent/token-demo", http.HandlerFunc(handler.TokenDemo))
+	mux.Handle("/api/agent/context-demo", http.HandlerFunc(handler.ContextDemo))
+	mux.Handle("/api/agent/recent-demo", http.HandlerFunc(handler.RecentDemo))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
@@ -97,6 +99,9 @@ func deepSeekAPIKeyFromEnv(data []byte) string {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The exercises are edited locally while the server keeps running. Do not
+		// let a browser retain an older HTML/JS bundle and its stale demo cards.
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")

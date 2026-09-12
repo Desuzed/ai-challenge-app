@@ -17,6 +17,16 @@ const tokenLabResults = document.querySelector('#token-lab-results');
 const forceCacheMiss = document.querySelector('#force-cache-miss');
 const tokenDemoButtons = Array.from(document.querySelectorAll('.token-demo-button'));
 const agentRunResult = document.querySelector('#agent-run-result');
+const recentMessages = document.querySelector('#recent-messages');
+const compressionState = document.querySelector('#compression-state');
+const conversationSummary = document.querySelector('#conversation-summary');
+const conversationSummaryText = document.querySelector('#conversation-summary-text');
+const runContextDemo = document.querySelector('#run-context-demo');
+const contextDemoResults = document.querySelector('#context-demo-results');
+const recentDemoN = document.querySelector('#recent-demo-n');
+const runRecentDemo = document.querySelector('#run-recent-demo');
+const recentDemoResults = document.querySelector('#recent-demo-results');
+const interactiveDemoVersion = 'marketplace-incident-v3';
 const temperature = document.querySelector('#temperature');
 const topP = document.querySelector('#top-p');
 const maxTokens = document.querySelector('#max-tokens');
@@ -45,6 +55,14 @@ const modelVersionsCards = document.querySelector('#model-versions-cards');
 const modelVersionsAnalysis = document.querySelector('#model-versions-analysis');
 const modelVersionsPrompt = document.querySelector('#model-versions-prompt');
 const modelVersionsSources = document.querySelector('#model-versions-sources');
+
+// A result belongs to the exact prompt that created it. When the educational
+// case changes, clear old DOM cards instead of presenting them as fresh data.
+if (sessionStorage.getItem('interactive-demo-version') !== interactiveDemoVersion) {
+  contextDemoResults.replaceChildren();
+  recentDemoResults.replaceChildren();
+  sessionStorage.setItem('interactive-demo-version', interactiveDemoVersion);
+}
 
 const sampleTask = 'Четыре задачи A, B, C и D нужно выполнить в четыре последовательных слота: 1, 2, 3, 4. Условия: A выполняется раньше B; C выполняется сразу после A; B выполняется сразу перед D. В каком порядке выполняются задачи? Кратко проверьте, что все условия соблюдены.';
 const sampleReference = 'A → C → B → D';
@@ -105,9 +123,68 @@ function renderTokenReport(tokens, messages) {
     item.append(main, caption); return item;
   }));
   tokenState.textContent = `Осталось примерно ${number(tokens.remainingContextTokens)} из ${number(tokens.contextLimitTokens)} токенов`;
-  tokenTotal.textContent = `За всю текущую сессию: модель уже получила ${number(tokens.cumulativeInputTokens)} входных токенов, сгенерировала ${number(tokens.cumulativeOutputTokens)} выходных; ориентировочная стоимость — ${dollars(tokens.cumulativeCostUsd)}.`;
+  tokenTotal.textContent = `За всю текущую сессию: модель уже получила ${number(tokens.cumulativeInputTokens)} входных токенов, сгенерировала ${number(tokens.cumulativeOutputTokens)} выходных; ориентировочная стоимость — ${dollars(tokens.cumulativeCostUsd)}. Сжатие убрало из повторяющихся запросов минимум ${number(tokens.compressionSavedTokens)} токенов старой истории.`;
   tokenNote.textContent = tokens.estimateNote || '';
 }
+
+function renderCompression(payload) {
+  if (payload.recentMessages) recentMessages.value = payload.recentMessages;
+  const count = payload.compressedCount || 0;
+  compressionState.textContent = count ? `В отдельное резюме сжато сообщений: ${number(count)}. В чате остаются последние ${number(payload.recentMessages)}.` : `Ранних сообщений пока нет: агент хранит до ${number(payload.recentMessages || recentMessages.value)} последних реплик полностью.`;
+  if (payload.summary) {
+    conversationSummary.hidden = false;
+    conversationSummaryText.textContent = payload.summary;
+  } else {
+    conversationSummary.hidden = true;
+    conversationSummaryText.textContent = '';
+  }
+}
+
+function renderContextDemo(result) {
+  const saved = document.createElement('p');
+  saved.className = 'token-total';
+  saved.textContent = `Экономия входа: ${number(result.savedInputTokens)} токенов (${number(result.fullInputTokens)} → ${number(result.compressedInputTokens)}). Оцените сами: сохранились ли цепочка retry с новым idempotency key, серверная защита, причина продолжения после rollback и вывод по iOS?`;
+  const comparison = document.createElement('div'); comparison.className = 'context-comparison';
+  for (const [title, answer, input, output, preview] of [['Без сжатия', result.fullAnswer, result.fullInputTokens, result.fullOutputTokens, result.fullPromptPreview], ['Со сжатием', result.compressedAnswer, result.compressedInputTokens, result.compressedOutputTokens, result.compressedPromptPreview]]) {
+    const card = document.createElement('article'); const heading = document.createElement('strong'); heading.textContent = title;
+    const metrics = document.createElement('p'); metrics.textContent = `Фактически: ${number(input)} входных + ${number(output)} выходных токенов.`;
+    const text = document.createElement('p'); text.textContent = answer;
+    const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Показать контекст запроса'; const pre = document.createElement('pre'); pre.className = 'token-prompt-preview'; pre.textContent = preview; details.append(summary, pre);
+    card.append(heading, metrics, text, details); comparison.append(card);
+  }
+  contextDemoResults.replaceChildren(saved, comparison);
+}
+
+runContextDemo.addEventListener('click', async () => {
+  runContextDemo.disabled = true; contextDemoResults.textContent = 'Выполняем два одинаковых прогона…';
+  try {
+    const response = await fetch('/api/agent/context-demo', { method: 'POST', cache: 'no-store' });
+    const payload = await readAgentResponse(response); if (!response.ok) throw new Error(payload.error || 'Не удалось выполнить сравнение.');
+    renderContextDemo(payload);
+  } catch (error) { contextDemoResults.textContent = readableFetchError(error, 'Не удалось выполнить сравнение.'); }
+  finally { runContextDemo.disabled = false; }
+});
+
+function renderRecentDemo(result) {
+  const card = document.createElement('article'); card.className = 'token-scenario';
+  const title = document.createElement('strong'); title.textContent = `N = ${number(result.recentMessages)}: последние реплики без изменений`;
+  const metrics = document.createElement('span'); metrics.textContent = `Фактически: ${number(result.inputTokens)} входных + ${number(result.outputTokens)} выходных токенов.`;
+  const text = document.createElement('p'); text.textContent = `Ответ: ${result.answer}`;
+  const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Показать summary и собранный запрос'; const pre = document.createElement('pre'); pre.className = 'token-prompt-preview'; pre.textContent = `Summary ранних сообщений:\n${result.summary}\n\nЗапрос модели:\n${result.promptPreview}`; details.append(summary, pre);
+  card.append(title, metrics, text, details); recentDemoResults.replaceChildren(card);
+}
+
+runRecentDemo.addEventListener('click', async () => {
+  const n = Number(recentDemoN.value);
+  if (!Number.isInteger(n) || n < 2 || n > 12) { recentDemoResults.textContent = 'Для этого примера N должен быть целым числом от 2 до 12.'; recentDemoN.focus(); return; }
+  runRecentDemo.disabled = true; recentDemoResults.textContent = 'Собираем контекст и запускаем модель…';
+  try {
+    const response = await fetch('/api/agent/recent-demo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify({ recentMessages: n }) });
+    const payload = await readAgentResponse(response); if (!response.ok) throw new Error(payload.error || 'Не удалось выполнить пример N.');
+    renderRecentDemo(payload);
+  } catch (error) { recentDemoResults.textContent = readableFetchError(error, 'Не удалось выполнить пример N.'); }
+  finally { runRecentDemo.disabled = false; }
+});
 
 function renderDemoResult(result) {
   const item = document.createElement('article'); item.className = `token-scenario${result.blocked ? ' token-scenario-overflow' : ''}`;
@@ -199,7 +276,7 @@ async function loadAgentHistory() {
   try {
     const response = await fetch('/api/agent/chat', { cache: 'no-store' });
     const payload = await readAgentResponse(response);
-    if (response.ok) { renderAgentHistory(payload.messages); renderTokenReport(payload.tokens, payload.messages); }
+    if (response.ok) { renderAgentHistory(payload.messages); renderTokenReport(payload.tokens, payload.messages); renderCompression(payload); }
   } catch (_) {
     tokenState.textContent = 'Не удалось получить данные чата.';
   }
@@ -219,11 +296,13 @@ agentForm.addEventListener('submit', async (event) => {
   answer.textContent = 'Агент обрабатывает сообщение…';
   answer.classList.remove('error');
   status.textContent = 'Агент отвечает…';
-  requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON({ message })}\n\nАгент добавляет сообщение в историю и обращается к LLM…`;
+  const n = Number(recentMessages.value);
+  if (!Number.isInteger(n) || n < 2 || n > 40) { answer.textContent = 'N должен быть целым числом от 2 до 40.'; answer.classList.add('error'); status.textContent = 'Ошибка'; recentMessages.focus(); agentSubmit.disabled = false; return; }
+  requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON({ message, recentMessages: n })}\n\nАгент при необходимости сжимает раннюю историю и обращается к LLM…`;
   try {
     const response = await fetch('/api/agent/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, recentMessages: n }),
     });
     const payload = await readAgentResponse(response);
     requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON({ httpStatus: response.status, messagesInSession: payload.messages?.length })}`;
@@ -231,6 +310,7 @@ agentForm.addEventListener('submit', async (event) => {
     requestLog.textContent += `\n\nОТВЕТ АГЕНТА\n${payload.answer}`;
     renderAgentHistory(payload.messages);
     renderTokenReport(payload.tokens, payload.messages);
+    renderCompression(payload);
     renderAgentRun(payload);
     answer.textContent = payload.answer;
     status.textContent = 'Готово';
@@ -254,6 +334,7 @@ clearAgentHistory.addEventListener('click', async () => {
     if (!response.ok) throw new Error(payload.error || 'Не удалось удалить историю диалога.');
     renderAgentHistory(payload.messages);
     renderTokenReport(payload.tokens, payload.messages);
+    renderCompression(payload);
     agentRunResult.replaceChildren(); agentRunResult.hidden = true;
     answer.textContent = 'История этого чата удалена.';
     answer.classList.remove('error');

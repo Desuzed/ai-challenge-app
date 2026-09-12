@@ -68,6 +68,41 @@ func TestTokenDemoOverflowDoesNotCallModel(t *testing.T) {
 	}
 }
 
+func TestContextDemoRunsFullAndCompressedVersions(t *testing.T) {
+	client := &fakeClient{answer: "Проверяемый ответ", messageUsage: models.ModelUsage{InputTokens: 100, OutputTokens: 10}}
+	recorder := httptest.NewRecorder()
+	New(client).ContextDemo(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/context-demo", nil))
+	if recorder.Code != http.StatusOK || len(client.messageRequests) != 2 {
+		t.Fatalf("status %d, calls %d", recorder.Code, len(client.messageRequests))
+	}
+	if len(client.messageRequests[0]) <= len(client.messageRequests[1]) {
+		t.Fatal("compressed request must contain fewer messages")
+	}
+	var result models.ContextDemoResult
+	if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FullAnswer == "" || !strings.Contains(result.CompressedPromptPreview, "Сжатое резюме") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRecentDemoUsesSelectedNWithoutChangingChat(t *testing.T) {
+	client := &fakeClient{answer: "Android: сохранять ключ; сервер: дедупликация; iOS: не срочно", messageUsage: models.ModelUsage{InputTokens: 77, OutputTokens: 18}}
+	recorder := httptest.NewRecorder()
+	New(client).RecentDemo(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/recent-demo", strings.NewReader(`{"recentMessages":4}`)))
+	if recorder.Code != http.StatusOK || len(client.messageRequests) != 1 {
+		t.Fatalf("status %d, calls %d", recorder.Code, len(client.messageRequests))
+	}
+	var result models.RecentDemoResult
+	if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.RecentMessages != 4 || result.InputTokens != 77 || !strings.Contains(result.PromptPreview, "Сжатое резюме") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func (f *fakeClient) Complete(_ context.Context, prompt string, mode models.ResponseMode, settings models.GenerationSettings) (string, string, error) {
 	f.prompt = prompt
 	f.mode = mode

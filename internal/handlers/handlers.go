@@ -157,6 +157,121 @@ func demoUsageCost(usage models.ModelUsage) float64 {
 	return float64(usage.CacheHitTokens)*0.014/1_000_000 + float64(miss)*0.44/1_000_000 + float64(usage.OutputTokens)*1.32/1_000_000
 }
 
+// ContextDemo makes the lesson measurable: both requests ask the same final
+// question, but the second carries a summary and only the last N messages.
+func (h *Handler) ContextDemo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте POST-запрос.")
+		return
+	}
+	if h.tokenDemoClient == nil {
+		writeAgentError(w, http.StatusServiceUnavailable, "Сравнение контекста сейчас недоступно.")
+		return
+	}
+	full, compressed := contextDemoMessages()
+	temperature := 0.0
+	// The incident answer has several required sections. Keep enough room for a
+	// complete comparison; input-token savings remain independently measurable.
+	settings := models.GenerationSettings{Temperature: &temperature, MaxTokens: 512}
+	fullCompletion, err := h.tokenDemoClient.CompleteMessages(r.Context(), full, settings)
+	if err != nil {
+		status, message := errorResponse(err)
+		writeAgentError(w, status, message)
+		return
+	}
+	compressedCompletion, err := h.tokenDemoClient.CompleteMessages(r.Context(), compressed, settings)
+	if err != nil {
+		status, message := errorResponse(err)
+		writeAgentError(w, status, message)
+		return
+	}
+	writeJSON(w, http.StatusOK, models.ContextDemoResult{Title: "Одинаковый вопрос: полная история и сжатый контекст", FullAnswer: fullCompletion.Answer, CompressedAnswer: compressedCompletion.Answer, FullInputTokens: fullCompletion.Usage.InputTokens, CompressedInputTokens: compressedCompletion.Usage.InputTokens, FullOutputTokens: fullCompletion.Usage.OutputTokens, CompressedOutputTokens: compressedCompletion.Usage.OutputTokens, SavedInputTokens: maxInt(0, fullCompletion.Usage.InputTokens-compressedCompletion.Usage.InputTokens), FullPromptPreview: previewMessages(full), CompressedPromptPreview: previewMessages(compressed)})
+}
+
+func contextDemoMessages() ([]models.ChatMessage, []models.ChatMessage) {
+	system := models.ChatMessage{Role: "system", Content: "Ты руководитель технического разбора инцидента в маркетплейсе. Отвечай структурированно, кратко и только по истории."}
+	old := []models.ChatMessage{{Role: "user", Content: "Инцидент маркетплейса: в 14:00 Android-версию 8.14 с новой сетевой библиотекой оплаты раскатили на 20% пользователей. iOS остался на версии 8.13 и не менялся."}, {Role: "assistant", Content: "Зафиксировал: изменение только в Android 8.14 и частичный rollout."}, {Role: "user", Content: "В 14:18 поддержка получила первые жалобы на двойные списания. 96% случаев — мобильный интернет; у пары платежей совпадают user_id, cart_id и сумма, а разница по времени 7–12 секунд."}, {Role: "assistant", Content: "Это похоже на повторную отправку одного платежа, а не на два независимых заказа."}, {Role: "user", Content: "В Android 8.14 таймаут уменьшили с 30 до 8 секунд и добавили автоматический retry. Idempotency key создаётся при открытии оплаты, но interceptor при retry генерирует новый ключ. Первый запрос часто успевает получить 200 на сервере после клиентского таймаута."}, {Role: "assistant", Content: "Вероятная цепочка: таймаут на клиенте → retry с новым ключом → сервер и платёжный провайдер считают запрос независимым → второе списание."}, {Role: "user", Content: "В 15:05 rollout остановили, в 15:20 откатили версию. Новые случаи шли ещё два часа только у пользователей, уже открывших экран оплаты в 8.14."}, {Role: "assistant", Content: "Откат не отменил уже созданные клиентские экраны и их retry-логику."}}
+	last := []models.ChatMessage{{Role: "user", Content: "Немедленная мера: сервер временно блокирует повторные платежи с одинаковыми user_id, cart_id и суммой в окне 30 секунд; финальная защита — серверная идемпотентность по стабильному ключу."}, {Role: "assistant", Content: "Зафиксировал временную дедупликацию и устойчивое серверное исправление."}, {Role: "user", Content: "Hotfix Android 8.14.1 повторно использует исходный idempotency key. Нужны тесты: timeout+retry с тем же ключом, два одинаковых платежа, плохая сеть и продолжение сценария после rollback."}, {Role: "assistant", Content: "Клиентское исправление и четыре регрессионные проверки приняты."}, {Role: "user", Content: "Дай краткий итог инцидента: первопричина, почему блокировка кнопки не помогла, что сделать сейчас и дальше, почему случаи продолжались после rollback и нужен ли срочный фикс iOS."}}
+	full := append([]models.ChatMessage{system}, append(old, last...)...)
+	summary := models.ChatMessage{Role: "system", Content: "Сжатое резюме ранней части инцидента: в маркетплейсе Android 8.14 с новой сетевой библиотекой оплаты раскатили на 20% в 14:00; iOS 8.13 не менялся. В 14:18 появились двойные списания: 96% на мобильной сети, пары имеют одинаковые user_id/cart_id/сумму и разницу 7–12 секунд. Android сократил таймаут 30→8 секунд и делает retry; interceptor на retry создаёт новый idempotency key. Первый запрос нередко успешно доходит до сервера после клиентского таймаута, второй с новым ключом считается независимым. Rollout остановили в 15:05, откатили в 15:20, но открытые экраны 8.14 продолжали retry ещё два часа."}
+	compressed := append([]models.ChatMessage{system, summary}, last...)
+	return full, compressed
+}
+
+func previewMessages(messages []models.ChatMessage) string {
+	var parts []string
+	for _, m := range messages {
+		parts = append(parts, m.Role+": "+m.Content)
+	}
+	return strings.Join(parts, "\n\n")
+}
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// RecentDemo lets a learner change N without touching their own saved chat.
+func (h *Handler) RecentDemo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте POST-запрос.")
+		return
+	}
+	if h.tokenDemoClient == nil {
+		writeAgentError(w, http.StatusServiceUnavailable, "Демонстрация N сейчас недоступна.")
+		return
+	}
+	var input models.RecentDemoRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input); err != nil || input.RecentMessages < 2 || input.RecentMessages > 12 {
+		writeAgentError(w, http.StatusBadRequest, "Для учебного примера N должен быть от 2 до 12.")
+		return
+	}
+	summary, recent := recentDemoContext(input.RecentMessages)
+	messages := append([]models.ChatMessage{{Role: "system", Content: "Ты руководитель технического разбора инцидента в маркетплейсе. Отвечай кратко и опирайся на переданный контекст."}, {Role: "system", Content: "Сжатое резюме ранней части: " + summary}}, recent...)
+	temperature := 0.0
+	completion, err := h.tokenDemoClient.CompleteMessages(r.Context(), messages, models.GenerationSettings{Temperature: &temperature, MaxTokens: 512})
+	if err != nil {
+		status, message := errorResponse(err)
+		writeAgentError(w, status, message)
+		return
+	}
+	writeJSON(w, http.StatusOK, models.RecentDemoResult{RecentMessages: input.RecentMessages, Summary: summary, Answer: completion.Answer, InputTokens: completion.Usage.InputTokens, OutputTokens: completion.Usage.OutputTokens, PromptPreview: previewMessages(messages)})
+}
+
+func recentDemoContext(n int) (string, []models.ChatMessage) {
+	all := []models.ChatMessage{
+		{Role: "user", Content: "Маркетплейс в 14:00 раскатил Android 8.14 с новой сетевой библиотекой оплаты на 20% аудитории; iOS 8.13 не менялся."},
+		{Role: "assistant", Content: "Зафиксировал платформы и частичный rollout."},
+		{Role: "user", Content: "В 14:18 пришли жалобы на двойные списания. 96% — мобильная сеть; пары платежей имеют одинаковые user_id, cart_id, сумму и разницу 7–12 секунд."},
+		{Role: "assistant", Content: "Наблюдения указывают на повторную отправку платежа."},
+		{Role: "user", Content: "В Android таймаут снизили с 30 до 8 секунд и включили retry. Первый запрос часто получает 200 на сервере уже после таймаута клиента."},
+		{Role: "assistant", Content: "Клиент может ошибочно решить, что первая попытка неуспешна."},
+		{Role: "user", Content: "Idempotency key создаётся при открытии оплаты, но interceptor при retry создаёт другой ключ; провайдер считает запросы независимыми."},
+		{Role: "assistant", Content: "Наиболее вероятная причина двойного списания — retry с новым ключом."},
+		{Role: "user", Content: "В 15:05 rollout остановили, в 15:20 откатили. Случаи шли ещё два часа у тех, кто открыл оплату в 8.14 до отката."},
+		{Role: "assistant", Content: "Rollback не отключает уже созданный экран и его retry-сценарий."},
+		{Role: "user", Content: "Сервер временно дедуплицирует платежи с одинаковыми user_id, cart_id и суммой за 30 секунд; Android hotfix переиспользует исходный ключ."},
+		{Role: "assistant", Content: "Немедленная защита и клиентский hotfix зафиксированы."},
+		{Role: "user", Content: "SRE подтвердил: после rollback нет новых установок 8.14, но открытые процессы приложения не получают конфигурацию до следующего запуска."},
+		{Role: "assistant", Content: "Это подтверждает, почему инцидент продолжался у части уже активных пользователей."},
+		{Role: "user", Content: "Финансы подготовят выборку всех пар платежей по совпадению user_id, cart_id, суммы и времени до 30 секунд для ручной верификации и возвратов."},
+		{Role: "assistant", Content: "План поиска пострадавших и безопасных возвратов зафиксирован."},
+		{Role: "user", Content: "Назови первопричину, меры сейчас и устойчивое исправление. Объясни, нужен ли срочный фикс iOS."},
+	}
+	cut := len(all) - n
+	if cut < 0 {
+		cut = 0
+	}
+	// This is the compact state produced by a summarizer: facts and decisions,
+	// not a concatenation of old turns. Keeping it short makes the effect of N
+	// visible: increasing N adds verbatim dialogue to this stable summary.
+	summary := "Инцидент маркетплейса: Android 8.14 с новой библиотекой оплаты раскатили на 20% в 14:00; iOS 8.13 не менялся. В 14:18 начались двойные списания (96% на мобильной сети; совпадают user_id, cart_id и сумма; разница 7–12 секунд). В Android таймаут 30→8 секунд и retry; interceptor на retry создаёт новый idempotency key, хотя первый запрос часто успевает обработаться сервером. Rollout остановили в 15:05, откатили в 15:20; открытые до отката экраны 8.14 ещё выполняли retry. Решения: временная дедупликация на сервере за 30 секунд, hotfix Android с исходным ключом, затем серверная идемпотентность; iOS не требует срочного фикса."
+	return summary, all[cut:]
+}
+
 // AgentChat keeps HTTP concerns thin: dialogue history and model settings are
 // intentionally encapsulated by the agent, not accepted from the browser.
 func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
@@ -171,14 +286,15 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: h.agent.History(sessionID), Tokens: h.agent.TokenReport(sessionID)})
+		summary, recent, compressed := h.agent.ContextState(sessionID)
+		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: h.agent.History(sessionID), Tokens: h.agent.TokenReport(sessionID), Summary: summary, RecentMessages: recent, CompressedCount: compressed})
 		return
 	case http.MethodDelete:
 		if err := h.agent.Clear(sessionID); err != nil {
 			writeAgentError(w, http.StatusInternalServerError, "Не удалось удалить историю диалога.")
 			return
 		}
-		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: []models.ChatMessage{}, Tokens: h.agent.TokenReport(sessionID)})
+		writeJSON(w, http.StatusOK, models.AgentResponse{Messages: []models.ChatMessage{}, Tokens: h.agent.TokenReport(sessionID), RecentMessages: 10})
 		return
 	case http.MethodPost:
 	default:
@@ -201,9 +317,9 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
 	defer cancel()
-	result, err := h.agent.Respond(ctx, sessionID, input.Message)
+	result, err := h.agent.Respond(ctx, sessionID, input.Message, input.RecentMessages)
 	if err != nil {
-		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) {
+		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) || strings.Contains(err.Error(), "N должен") {
 			writeAgentError(w, http.StatusBadRequest, err.Error())
 			return
 		}
