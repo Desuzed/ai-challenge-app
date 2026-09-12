@@ -12,8 +12,17 @@ import (
 )
 
 type Store interface {
-	Load() (map[string][]models.ChatMessage, error)
-	Save(map[string][]models.ChatMessage) error
+	Load() (map[string]ConversationState, error)
+	Save(map[string]ConversationState) error
+}
+
+// ConversationState is stored per browser session. Summary is deliberately a
+// separate field, never a fake dialogue turn.
+type ConversationState struct {
+	Messages        []models.ChatMessage `json:"messages"`
+	Summary         string               `json:"summary,omitempty"`
+	RecentMessages  int                  `json:"recentMessages,omitempty"`
+	CompressedCount int                  `json:"compressedCount,omitempty"`
 }
 
 // JSONStore writes through a temporary file, so an interrupted write never
@@ -25,27 +34,36 @@ type JSONStore struct {
 
 func NewJSONStore(path string) *JSONStore { return &JSONStore{path: path} }
 
-func (s *JSONStore) Load() (map[string][]models.ChatMessage, error) {
+func (s *JSONStore) Load() (map[string]ConversationState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return make(map[string][]models.ChatMessage), nil
+		return make(map[string]ConversationState), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var sessions map[string][]models.ChatMessage
+	var sessions map[string]ConversationState
 	if err := json.Unmarshal(data, &sessions); err != nil {
-		return nil, err
+		// Day 7/8 used a map of raw message arrays. Keep that local history
+		// readable when upgrading to the compressed format.
+		var legacy map[string][]models.ChatMessage
+		if legacyErr := json.Unmarshal(data, &legacy); legacyErr != nil {
+			return nil, err
+		}
+		sessions = make(map[string]ConversationState, len(legacy))
+		for id, messages := range legacy {
+			sessions[id] = ConversationState{Messages: messages}
+		}
 	}
 	if sessions == nil {
-		sessions = make(map[string][]models.ChatMessage)
+		sessions = make(map[string]ConversationState)
 	}
 	return copySessions(sessions), nil
 }
 
-func (s *JSONStore) Save(sessions map[string][]models.ChatMessage) error {
+func (s *JSONStore) Save(sessions map[string]ConversationState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	data, err := json.MarshalIndent(sessions, "", "  ")
@@ -75,10 +93,11 @@ func (s *JSONStore) Save(sessions map[string][]models.ChatMessage) error {
 	return os.Rename(temporaryName, s.path)
 }
 
-func copySessions(sessions map[string][]models.ChatMessage) map[string][]models.ChatMessage {
-	result := make(map[string][]models.ChatMessage, len(sessions))
-	for id, messages := range sessions {
-		result[id] = copyMessages(messages)
+func copySessions(sessions map[string]ConversationState) map[string]ConversationState {
+	result := make(map[string]ConversationState, len(sessions))
+	for id, state := range sessions {
+		state.Messages = copyMessages(state.Messages)
+		result[id] = state
 	}
 	return result
 }
