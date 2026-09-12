@@ -168,3 +168,31 @@ func TestRespondDoesNotKeepFailedMessage(t *testing.T) {
 		t.Fatalf("history after failure = %#v, want empty", got)
 	}
 }
+
+func TestRespondCompressesOlderMessagesAndKeepsRecentN(t *testing.T) {
+	client := &fakeCompleter{answer: "Короткое резюме"}
+	agent := New(client)
+	if _, err := agent.Respond(context.Background(), "session", "Первый факт", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Respond(context.Background(), "session", "Второй факт", 2); err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Respond(context.Background(), "session", "Третий вопрос", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || result.Messages[0].Content != "Третий вопрос" {
+		t.Fatalf("raw history = %#v, want only last two messages", result.Messages)
+	}
+	if result.Summary == "" || result.CompressedCount < 1 {
+		t.Fatalf("compression state = %#v", result)
+	}
+	if len(client.requests) != 7 {
+		t.Fatalf("calls = %d, want answers plus incremental summaries", len(client.requests))
+	}
+	request := client.requests[5]
+	if len(request) < 3 || !strings.Contains(request[1].Content, "Сжатое резюме") || request[len(request)-1].Content != "Третий вопрос" {
+		t.Fatalf("compressed request = %#v", request)
+	}
+}
