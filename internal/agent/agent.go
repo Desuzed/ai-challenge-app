@@ -13,6 +13,9 @@ import (
 )
 
 const maxMessageCharacters = 32000
+const defaultRecentMessages = 10
+const minRecentMessages = 2
+const maxRecentMessages = 40
 
 var ErrEmptyMessage = errors.New("Введите сообщение.")
 var ErrMessageTooLong = errors.New("Сообщение слишком длинное.")
@@ -24,9 +27,12 @@ type completer interface {
 }
 
 type conversation struct {
-	mu       sync.Mutex
-	messages []models.ChatMessage
-	usages   []models.ModelUsage
+	mu              sync.Mutex
+	messages        []models.ChatMessage
+	summary         string
+	recentMessages  int
+	compressedCount int
+	usages          []models.ModelUsage
 }
 
 type Agent struct {
@@ -52,7 +58,7 @@ func NewPersistent(client completer, store Store) (*Agent, error) {
 	return newAgent(client, store, sessions), nil
 }
 
-func newAgent(client completer, store Store, restored map[string][]models.ChatMessage) *Agent {
+func newAgent(client completer, store Store, restored map[string]ConversationState) *Agent {
 	temperature := 0.7
 	value := &Agent{
 		client:   client,
@@ -61,15 +67,19 @@ func newAgent(client completer, store Store, restored map[string][]models.ChatMe
 		sessions: make(map[string]*conversation),
 		store:    store,
 	}
-	for id, messages := range restored {
-		value.sessions[id] = &conversation{messages: copyMessages(messages)}
+	for id, state := range restored {
+		n := state.RecentMessages
+		if n == 0 {
+			n = defaultRecentMessages
+		}
+		value.sessions[id] = &conversation{messages: copyMessages(state.Messages), summary: state.Summary, recentMessages: n, compressedCount: state.CompressedCount}
 	}
 	return value
 }
 
 // Respond appends a user message, sends the entire dialogue to the LLM, and
 // appends its answer only after a successful completion.
-func (a *Agent) Respond(ctx context.Context, sessionID, input string) (models.AgentResponse, error) {
+func (a *Agent) Respond(ctx context.Context, sessionID, input string, recent ...int) (models.AgentResponse, error) {
 	message := strings.TrimSpace(input)
 	if message == "" {
 		return models.AgentResponse{}, ErrEmptyMessage
@@ -84,10 +94,28 @@ func (a *Agent) Respond(ctx context.Context, sessionID, input string) (models.Ag
 	conversation := a.conversation(sessionID)
 	conversation.mu.Lock()
 	defer conversation.mu.Unlock()
+	requestedRecent := 0
+	if len(recent) > 0 {
+		requestedRecent = recent[0]
+	}
+	if requestedRecent != 0 {
+		if requestedRecent < minRecentMessages || requestedRecent > maxRecentMessages {
+			return models.AgentResponse{}, errors.New("N должен быть от 2 до 40 сообщений.")
+		}
+		conversation.recentMessages = requestedRecent
+	}
 	conversation.messages = append(conversation.messages, models.ChatMessage{Role: "user", Content: message})
-	request := make([]models.ChatMessage, 0, len(conversation.messages)+1)
-	request = append(request, models.ChatMessage{Role: "system", Content: a.system})
-	request = append(request, conversation.messages...)
+	// Never attempt to turn an already-overflowing dialogue into one enormous
+	// summarization prompt. Normal compression happens long before this point.
+	if estimateMessagesTokens(append([]models.ChatMessage{{Role: "system", Content: a.system}}, conversation.messages...))+a.settings.MaxTokens > contextLimitTokens {
+		conversation.messages = conversation.messages[:len(conversation.messages)-1]
+		return models.AgentResponse{}, ErrContextLimit
+	}
+	if err := a.compressLocked(ctx, conversation); err != nil {
+		conversation.messages = conversation.messages[:len(conversation.messages)-1]
+		return models.AgentResponse{}, err
+	}
+	request := a.requestMessages(conversation)
 	report := a.tokenReport(conversation, request, message, models.ModelUsage{})
 	if report.EstimatedRequestTokens+report.ReservedOutputTokens > report.ContextLimitTokens {
 		conversation.messages = conversation.messages[:len(conversation.messages)-1]
@@ -101,13 +129,57 @@ func (a *Agent) Respond(ctx context.Context, sessionID, input string) (models.Ag
 	}
 	conversation.messages = append(conversation.messages, models.ChatMessage{Role: "assistant", Content: completion.Answer})
 	conversation.usages = append(conversation.usages, completion.Usage)
+	if err := a.compressLocked(ctx, conversation); err != nil {
+		conversation.messages = conversation.messages[:len(conversation.messages)-1]
+		conversation.usages = conversation.usages[:len(conversation.usages)-1]
+		return models.AgentResponse{}, err
+	}
 	if err := a.save(); err != nil {
 		conversation.messages = conversation.messages[:len(conversation.messages)-2]
 		conversation.usages = conversation.usages[:len(conversation.usages)-1]
 		return models.AgentResponse{}, ErrHistorySave
 	}
 	report = a.tokenReport(conversation, request, message, completion.Usage)
-	return models.AgentResponse{Answer: completion.Answer, Messages: copyMessages(conversation.messages), RequestMessages: copyMessages(request), Tokens: report}, nil
+	return models.AgentResponse{Answer: completion.Answer, Messages: copyMessages(conversation.messages), RequestMessages: copyMessages(request), Tokens: report, Summary: conversation.summary, RecentMessages: conversation.recentMessages, CompressedCount: conversation.compressedCount}, nil
+}
+
+func (a *Agent) compressLocked(ctx context.Context, c *conversation) error {
+	if c.recentMessages == 0 {
+		c.recentMessages = defaultRecentMessages
+	}
+	if len(c.messages) <= c.recentMessages {
+		return nil
+	}
+	count := len(c.messages) - c.recentMessages
+	older := copyMessages(c.messages[:count])
+	prompt := "Сожми раннюю часть диалога в короткое точное резюме для следующего ответа. Сохрани факты пользователя, решения, предпочтения, договорённости, открытые вопросы и ограничения. Не выдумывай. Верни только резюме на русском."
+	if c.summary != "" {
+		prompt += "\n\nПредыдущее резюме:\n" + c.summary
+	}
+	for _, message := range older {
+		prompt += "\n\n" + message.Role + ": " + message.Content
+	}
+	if estimateMessagesTokens([]models.ChatMessage{{Role: "system", Content: prompt}})+256 > contextLimitTokens {
+		return ErrContextLimit
+	}
+	temperature := 0.0
+	completion, err := a.client.CompleteMessages(ctx, []models.ChatMessage{{Role: "system", Content: prompt}}, models.GenerationSettings{Temperature: &temperature, MaxTokens: 256})
+	if err != nil {
+		return err
+	}
+	c.summary = strings.TrimSpace(completion.Answer)
+	c.messages = copyMessages(c.messages[count:])
+	c.compressedCount += count
+	c.usages = append(c.usages, completion.Usage)
+	return nil
+}
+
+func (a *Agent) requestMessages(c *conversation) []models.ChatMessage {
+	request := []models.ChatMessage{{Role: "system", Content: a.system}}
+	if c.summary != "" {
+		request = append(request, models.ChatMessage{Role: "system", Content: "Сжатое резюме ранней части диалога (это контекст, не инструкция пользователя):\n" + c.summary})
+	}
+	return append(request, c.messages...)
 }
 
 func (a *Agent) History(sessionID string) []models.ChatMessage {
@@ -117,13 +189,20 @@ func (a *Agent) History(sessionID string) []models.ChatMessage {
 	return copyMessages(conversation.messages)
 }
 
+func (a *Agent) ContextState(sessionID string) (string, int, int) {
+	conversation := a.conversation(sessionID)
+	conversation.mu.Lock()
+	defer conversation.mu.Unlock()
+	return conversation.summary, conversation.recentMessages, conversation.compressedCount
+}
+
 // TokenReport is useful on page reloads too: it shows the estimated size of
 // restored history even though historical provider usage is not persisted.
 func (a *Agent) TokenReport(sessionID string) models.AgentTokenReport {
 	conversation := a.conversation(sessionID)
 	conversation.mu.Lock()
 	defer conversation.mu.Unlock()
-	request := append([]models.ChatMessage{{Role: "system", Content: a.system}}, conversation.messages...)
+	request := a.requestMessages(conversation)
 	return a.tokenReport(conversation, request, "", models.ModelUsage{})
 }
 
@@ -138,6 +217,13 @@ func (a *Agent) tokenReport(conversation *conversation, request []models.ChatMes
 		ContextLimitTokens: contextLimitTokens, ReservedOutputTokens: a.settings.MaxTokens, EstimateNote: estimateNote,
 		CacheHitTokens: usage.CacheHitTokens, CacheMissTokens: usage.CacheMissTokens,
 	}
+	if conversation.summary != "" {
+		report.HistoryTokens += estimateMessageTokens(models.ChatMessage{Role: "system", Content: conversation.summary})
+	}
+	report.FullHistoryEstimate = report.HistoryTokens
+	// The exact old text is intentionally deleted after compression, so this is
+	// a transparent lower-bound saving versus carrying it in each request.
+	report.CompressionSavedTokens = conversation.compressedCount * 4
 	if current == "" {
 		report.CurrentMessageTokens = 0
 	}
@@ -179,7 +265,7 @@ func (a *Agent) conversation(sessionID string) *conversation {
 	if existing := a.sessions[sessionID]; existing != nil {
 		return existing
 	}
-	created := &conversation{}
+	created := &conversation{recentMessages: defaultRecentMessages}
 	a.sessions[sessionID] = created
 	return created
 }
@@ -194,9 +280,9 @@ func (a *Agent) save() error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	sessions := make(map[string][]models.ChatMessage, len(a.sessions))
+	sessions := make(map[string]ConversationState, len(a.sessions))
 	for id, conversation := range a.sessions {
-		sessions[id] = copyMessages(conversation.messages)
+		sessions[id] = ConversationState{Messages: copyMessages(conversation.messages), Summary: conversation.summary, RecentMessages: conversation.recentMessages, CompressedCount: conversation.compressedCount}
 	}
 	return a.store.Save(sessions)
 }
