@@ -14,7 +14,8 @@ type ChatMessage struct {
 }
 
 type AgentRequest struct {
-	Message string `json:"message"`
+	Message        string `json:"message"`
+	RecentMessages int    `json:"recentMessages"`
 }
 
 type AgentResponse struct {
@@ -22,6 +23,9 @@ type AgentResponse struct {
 	Messages        []ChatMessage    `json:"messages"`
 	RequestMessages []ChatMessage    `json:"requestMessages,omitempty"`
 	Tokens          AgentTokenReport `json:"tokens"`
+	Summary         string           `json:"summary,omitempty"`
+	RecentMessages  int              `json:"recentMessages"`
+	CompressedCount int              `json:"compressedCount"`
 }
 
 // AgentTokenReport makes the cost of carrying a dialogue visible. Values named
@@ -43,6 +47,37 @@ type AgentTokenReport struct {
 	CacheHitTokens         int     `json:"cacheHitTokens"`
 	CacheMissTokens        int     `json:"cacheMissTokens"`
 	EstimateNote           string  `json:"estimateNote"`
+	FullHistoryEstimate    int     `json:"fullHistoryEstimate"`
+	CompressionSavedTokens int     `json:"compressionSavedTokens"`
+}
+
+// ContextDemoResult compares the same final question with an untouched and a
+// compressed conversation. It is intentionally isolated from browser history.
+type ContextDemoResult struct {
+	Title                   string `json:"title"`
+	FullAnswer              string `json:"fullAnswer"`
+	CompressedAnswer        string `json:"compressedAnswer"`
+	FullInputTokens         int    `json:"fullInputTokens"`
+	CompressedInputTokens   int    `json:"compressedInputTokens"`
+	FullOutputTokens        int    `json:"fullOutputTokens"`
+	CompressedOutputTokens  int    `json:"compressedOutputTokens"`
+	SavedInputTokens        int    `json:"savedInputTokens"`
+	FullPromptPreview       string `json:"fullPromptPreview"`
+	CompressedPromptPreview string `json:"compressedPromptPreview"`
+}
+
+type RecentDemoRequest struct {
+	RecentMessages int `json:"recentMessages"`
+}
+
+// RecentDemoResult is an isolated interactive demonstration of the N setting.
+type RecentDemoResult struct {
+	RecentMessages int    `json:"recentMessages"`
+	Summary        string `json:"summary"`
+	Answer         string `json:"answer"`
+	InputTokens    int    `json:"inputTokens"`
+	OutputTokens   int    `json:"outputTokens"`
+	PromptPreview  string `json:"promptPreview"`
 }
 
 type TokenDemoRequest struct {
