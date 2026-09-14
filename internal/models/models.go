@@ -13,19 +13,62 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
+// ContextStrategy selects the information that reaches the model. None of the
+// strategies uses a generated dialogue summary.
+type ContextStrategy string
+
+const (
+	StrategySlidingWindow ContextStrategy = "sliding_window"
+	StrategyFacts         ContextStrategy = "facts"
+	StrategyBranching     ContextStrategy = "branching"
+)
+
+type Fact struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type ConversationBranch struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	ParentCheckpointID string `json:"parentCheckpointId,omitempty"`
+	MessageCount       int    `json:"messageCount"`
+}
+
+type ConversationCheckpoint struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	BranchID     string `json:"branchId"`
+	MessageCount int    `json:"messageCount"`
+}
+
 type AgentRequest struct {
-	Message        string `json:"message"`
-	RecentMessages int    `json:"recentMessages"`
+	Message        string          `json:"message"`
+	RecentMessages int             `json:"recentMessages"`
+	Strategy       ContextStrategy `json:"strategy,omitempty"`
+}
+
+// ContextCommand changes context mode or the active branch without asking the
+// model. It keeps branch operations explicit and easy to inspect in the UI.
+type ContextCommand struct {
+	Action       string          `json:"action"`
+	Strategy     ContextStrategy `json:"strategy,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	CheckpointID string          `json:"checkpointId,omitempty"`
+	BranchID     string          `json:"branchId,omitempty"`
 }
 
 type AgentResponse struct {
-	Answer          string           `json:"answer"`
-	Messages        []ChatMessage    `json:"messages"`
-	RequestMessages []ChatMessage    `json:"requestMessages,omitempty"`
-	Tokens          AgentTokenReport `json:"tokens"`
-	Summary         string           `json:"summary,omitempty"`
-	RecentMessages  int              `json:"recentMessages"`
-	CompressedCount int              `json:"compressedCount"`
+	Answer          string                   `json:"answer"`
+	Messages        []ChatMessage            `json:"messages"`
+	RequestMessages []ChatMessage            `json:"requestMessages,omitempty"`
+	Tokens          AgentTokenReport         `json:"tokens"`
+	Strategy        ContextStrategy          `json:"strategy"`
+	Facts           []Fact                   `json:"facts,omitempty"`
+	ActiveBranchID  string                   `json:"activeBranchId,omitempty"`
+	Branches        []ConversationBranch     `json:"branches,omitempty"`
+	Checkpoints     []ConversationCheckpoint `json:"checkpoints,omitempty"`
+	RecentMessages  int                      `json:"recentMessages"`
 }
 
 // AgentTokenReport makes the cost of carrying a dialogue visible. Values named
@@ -48,36 +91,69 @@ type AgentTokenReport struct {
 	CacheMissTokens        int     `json:"cacheMissTokens"`
 	EstimateNote           string  `json:"estimateNote"`
 	FullHistoryEstimate    int     `json:"fullHistoryEstimate"`
-	CompressionSavedTokens int     `json:"compressionSavedTokens"`
+	CompressionSavedTokens int     `json:"compressionSavedTokens,omitempty"`
 }
 
-// ContextDemoResult compares the same final question with an untouched and a
-// compressed conversation. It is intentionally isolated from browser history.
-type ContextDemoResult struct {
-	Title                   string `json:"title"`
-	FullAnswer              string `json:"fullAnswer"`
-	CompressedAnswer        string `json:"compressedAnswer"`
-	FullInputTokens         int    `json:"fullInputTokens"`
-	CompressedInputTokens   int    `json:"compressedInputTokens"`
-	FullOutputTokens        int    `json:"fullOutputTokens"`
-	CompressedOutputTokens  int    `json:"compressedOutputTokens"`
-	SavedInputTokens        int    `json:"savedInputTokens"`
-	FullPromptPreview       string `json:"fullPromptPreview"`
-	CompressedPromptPreview string `json:"compressedPromptPreview"`
+// ContextStrategyDemoResult contains three genuine provider completions over
+// one fixed 15-message specification-gathering scenario.
+type ContextStrategyDemoResult struct {
+	Title    string                   `json:"title"`
+	Scenario ContextStrategyScenario  `json:"scenario"`
+	Runs     []ContextStrategyDemoRun `json:"runs"`
 }
 
-type RecentDemoRequest struct {
-	RecentMessages int `json:"recentMessages"`
+// ContextStrategyScenario is the complete read-only input used by the
+// educational comparison. GET returns it without a model invocation.
+type ContextStrategyScenario struct {
+	Title        string        `json:"title"`
+	SystemPrompt string        `json:"systemPrompt"`
+	Messages     []ChatMessage `json:"messages"`
+	Facts        []Fact        `json:"facts"`
+	WindowSize   int           `json:"windowSize"`
 }
 
-// RecentDemoResult is an isolated interactive demonstration of the N setting.
-type RecentDemoResult struct {
-	RecentMessages int    `json:"recentMessages"`
-	Summary        string `json:"summary"`
-	Answer         string `json:"answer"`
-	InputTokens    int    `json:"inputTokens"`
-	OutputTokens   int    `json:"outputTokens"`
-	PromptPreview  string `json:"promptPreview"`
+type ContextStrategyDemoRun struct {
+	Strategy         ContextStrategy `json:"strategy"`
+	Title            string          `json:"title"`
+	Answer           string          `json:"answer"`
+	InputTokens      int             `json:"inputTokens"`
+	OutputTokens     int             `json:"outputTokens"`
+	PromptPreview    string          `json:"promptPreview"`
+	ContextNote      string          `json:"contextNote"`
+	RetainedFacts    []Fact          `json:"retainedFacts,omitempty"`
+	IncludedMessages int             `json:"includedMessages"`
+}
+
+// BranchingDemoScenario shows a shared checkpoint and two independent
+// continuations. It is read-only until the user runs the comparison.
+type BranchingDemoScenario struct {
+	Title        string                `json:"title"`
+	SystemPrompt string                `json:"systemPrompt"`
+	Checkpoint   []ChatMessage         `json:"checkpoint"`
+	Branches     []BranchingDemoBranch `json:"branches"`
+}
+
+type BranchingDemoBranch struct {
+	ID       string        `json:"id"`
+	Title    string        `json:"title"`
+	Messages []ChatMessage `json:"messages"`
+}
+
+type BranchingDemoResult struct {
+	Title    string                `json:"title"`
+	Scenario BranchingDemoScenario `json:"scenario"`
+	Runs     []BranchingDemoRun    `json:"runs"`
+}
+
+type BranchingDemoRun struct {
+	BranchID           string `json:"branchId"`
+	Title              string `json:"title"`
+	Answer             string `json:"answer"`
+	InputTokens        int    `json:"inputTokens"`
+	OutputTokens       int    `json:"outputTokens"`
+	PromptPreview      string `json:"promptPreview"`
+	CheckpointMessages int    `json:"checkpointMessages"`
+	BranchMessages     int    `json:"branchMessages"`
 }
 
 type TokenDemoRequest struct {

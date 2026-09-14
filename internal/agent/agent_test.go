@@ -97,9 +97,11 @@ func TestRespondRejectsDialogueBeyondContextBeforeProviderCall(t *testing.T) {
 	client := &fakeCompleter{answer: "Не должен вызываться"}
 	agent := New(client)
 	conversation := agent.conversation("session")
-	conversation.messages = make([]models.ChatMessage, 100)
-	for i := range conversation.messages {
-		conversation.messages[i] = models.ChatMessage{Role: "user", Content: strings.Repeat("я", maxMessageCharacters)}
+	conversation.strategy = models.StrategyBranching
+	conversation.ensureRootBranchLocked()
+	conversation.branches["root"].messages = make([]models.ChatMessage, 100)
+	for i := range conversation.branches["root"].messages {
+		conversation.branches["root"].messages[i] = models.ChatMessage{Role: "user", Content: strings.Repeat("я", maxMessageCharacters)}
 	}
 	if _, err := agent.Respond(context.Background(), "session", "Ещё один вопрос"); !errors.Is(err, ErrContextLimit) {
 		t.Fatalf("Respond error = %v, want ErrContextLimit", err)
@@ -169,8 +171,8 @@ func TestRespondDoesNotKeepFailedMessage(t *testing.T) {
 	}
 }
 
-func TestRespondCompressesOlderMessagesAndKeepsRecentN(t *testing.T) {
-	client := &fakeCompleter{answer: "Короткое резюме"}
+func TestSlidingWindowKeepsOnlyRecentNWithoutSummaryCall(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ"}
 	agent := New(client)
 	if _, err := agent.Respond(context.Background(), "session", "Первый факт", 2); err != nil {
 		t.Fatal(err)
@@ -185,14 +187,65 @@ func TestRespondCompressesOlderMessagesAndKeepsRecentN(t *testing.T) {
 	if len(result.Messages) != 2 || result.Messages[0].Content != "Третий вопрос" {
 		t.Fatalf("raw history = %#v, want only last two messages", result.Messages)
 	}
-	if result.Summary == "" || result.CompressedCount < 1 {
-		t.Fatalf("compression state = %#v", result)
+	if len(client.requests) != 3 {
+		t.Fatalf("calls = %d, want one provider request per user message", len(client.requests))
 	}
-	if len(client.requests) != 7 {
-		t.Fatalf("calls = %d, want answers plus incremental summaries", len(client.requests))
+	request := client.requests[2]
+	if len(request) != 3 || request[1].Role != "assistant" || request[1].Content != "Ответ" || request[2].Content != "Третий вопрос" {
+		t.Fatalf("window request = %#v", request)
 	}
-	request := client.requests[5]
-	if len(request) < 3 || !strings.Contains(request[1].Content, "Сжатое резюме") || request[len(request)-1].Content != "Третий вопрос" {
-		t.Fatalf("compressed request = %#v", request)
+}
+
+func TestFactsSurviveWindowAndAreSentAsSeparateSystemBlock(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ"}
+	agent := New(client)
+	if _, err := agent.RespondWithStrategy(context.Background(), "session", "Цель: сделать приложение привычек", 2, models.StrategyFacts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.RespondWithStrategy(context.Background(), "session", "Ограничение: только iOS", 2, models.StrategyFacts); err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.RespondWithStrategy(context.Background(), "session", "Что мы делаем?", 2, models.StrategyFacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || len(result.Facts) == 0 {
+		t.Fatalf("state = %#v", result)
+	}
+	if !strings.Contains(client.requests[2][1].Content, "Постоянные факты") || !strings.Contains(client.requests[2][1].Content, "сделать приложение") {
+		t.Fatalf("facts prompt = %#v", client.requests[2])
+	}
+}
+
+func TestBranchingCreatesIndependentChildrenFromCheckpoint(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ"}
+	agent := New(client)
+	if _, err := agent.RespondWithStrategy(context.Background(), "session", "Общая задача", 2, models.StrategyBranching); err != nil {
+		t.Fatal(err)
+	}
+	state, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "checkpoint", Name: "до решения"})
+	if err != nil || len(state.Checkpoints) != 1 {
+		t.Fatalf("checkpoint state = %#v, err=%v", state, err)
+	}
+	checkpointID := state.Checkpoints[0].ID
+	state, err = agent.ApplyContextCommand("session", models.ContextCommand{Action: "create_branch", CheckpointID: checkpointID, Name: "вариант A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchA := state.ActiveBranchID
+	if _, err := agent.RespondWithStrategy(context.Background(), "session", "Продолжение A", 0, models.StrategyBranching); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "create_branch", CheckpointID: checkpointID, Name: "вариант B"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.History("session"); len(got) != 2 || got[0].Content != "Общая задача" {
+		t.Fatalf("new branch history = %#v", got)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "switch_branch", BranchID: branchA}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.History("session"); len(got) != 4 || got[2].Content != "Продолжение A" {
+		t.Fatalf("restored branch history = %#v", got)
 	}
 }

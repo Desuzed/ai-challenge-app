@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
     <title>AI Challenge App</title>
-    <link rel="stylesheet" href="style.css?v=day9-context-compression-2">
+    <link rel="stylesheet" href="style.css?v=day10-context-strategies-1">
   </head>
   <body>
     <main class="container">
       <section class="card" aria-labelledby="title">
-        <p class="eyebrow">AI Challenge · День 9</p>
+        <p class="eyebrow">AI Challenge · День 10</p>
         <h1 id="title">AI Challenge App</h1>
-        <p class="intro">Агент хранит последние реплики как есть, а раннюю часть сжимает в отдельное резюме. В запрос к LLM попадают резюме и последние N сообщений.</p>
+        <p class="intro">Три стратегии контекста без summary: скользящее окно, отдельные sticky facts и независимые ветки диалога.</p>
 
         <section class="agent-chat" aria-labelledby="agent-title">
           <div class="answer-heading">
@@ -23,17 +23,32 @@
             <p class="hint">История диалога появится здесь после первого сообщения.</p>
           </div>
           <section class="compression-panel" aria-labelledby="compression-title">
-            <div><h3 id="compression-title">Сжатие истории</h3><p class="hint">N — сколько последних сообщений хранить полностью. Всё, что старше, заменяется резюме и сохраняется отдельно от переписки.</p></div>
-            <label for="recent-messages">Последних сообщений (N)</label>
-            <input id="recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
-            <p id="compression-state" class="hint">Пока резюме не создано.</p>
-            <details id="conversation-summary" hidden><summary>Показать сохранённое резюме</summary><pre id="conversation-summary-text" class="token-prompt-preview"></pre></details>
-            <div class="recent-demo" aria-labelledby="recent-demo-title">
-              <div><strong id="recent-demo-title">Песочница: как влияет N</strong><p class="hint">Выберите N от 2 до 12 и запустите разбор инцидента в маркетплейсе с Android/iOS. Ваш чат и его summary не меняются.</p></div>
-              <label for="recent-demo-n">N в примере</label>
-              <input id="recent-demo-n" type="number" min="2" max="12" value="4" inputmode="numeric">
-              <button id="run-recent-demo" class="secondary-button" type="button">Запустить пример N</button>
-              <div id="recent-demo-results" class="recent-demo-results" aria-live="polite"></div>
+            <div><h3 id="compression-title">Стратегия управления контекстом</h3><p class="hint">Summary не используется: видно ровно те данные, которые отправляются модели.</p></div>
+            <label for="context-strategy">Стратегия</label>
+            <select id="context-strategy">
+              <option value="sliding_window">1. Sliding Window</option>
+              <option value="facts">2. Sticky Facts / Key-Value Memory</option>
+              <option value="branching">3. Branching — ветки диалога</option>
+            </select>
+            <section id="sliding-panel" class="strategy-panel" aria-labelledby="sliding-title">
+              <h4 id="sliding-title">Sliding Window</h4>
+              <p class="hint">Хранятся и отправляются только последние N сообщений; ранние реплики удаляются.</p>
+              <label for="sliding-recent-messages">Последних сообщений (N)</label>
+              <input id="sliding-recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
+            </section>
+            <section id="facts-strategy-panel" class="strategy-panel" hidden aria-labelledby="facts-title">
+              <h4 id="facts-title">Sticky Facts / Key-Value Memory</h4>
+              <p class="hint">Facts обновляются после каждой реплики пользователя. В модель уходят facts и последние N сообщений.</p>
+              <label for="facts-recent-messages">Последних сообщений (N)</label>
+              <input id="facts-recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
+              <details id="facts-panel"><summary>Показать sticky facts</summary><dl id="facts-list" class="facts-list"></dl></details>
+            </section>
+            <section id="branch-panel" class="strategy-panel recent-demo" hidden aria-labelledby="branch-title">
+              <h4 id="branch-title">Branching — ветки диалога</h4>
+              <div><strong>Checkpoint и ветки</strong><p class="hint">Создайте checkpoint, от него — две ветки, затем переключайтесь между ними. Сообщения веток независимы.</p></div>
+              <div class="branch-actions"><input id="checkpoint-name" type="text" placeholder="Название checkpoint"><button id="create-checkpoint" class="secondary-button" type="button">Создать checkpoint</button></div>
+              <div class="branch-actions"><select id="checkpoint-select" aria-label="Checkpoint"></select><input id="branch-name" type="text" placeholder="Название ветки"><button id="create-branch" class="secondary-button" type="button">Создать ветку</button></div>
+              <div id="branch-list" class="branch-list" aria-live="polite"></div>
             </div>
           </section>
           <section class="token-panel" aria-labelledby="token-title">
@@ -43,9 +58,26 @@
             <p id="token-total" class="token-total" aria-live="polite"></p>
             <p id="token-note" class="hint"></p>
             <div class="context-lab" aria-labelledby="context-lab-title">
-              <div><strong id="context-lab-title">Прогон: без сжатия vs со сжатием</strong><p class="hint">Два реальных вызова модели разбирают один инцидент маркетплейса. Сравните точность вывода и фактические входные токены.</p></div>
-              <button id="run-context-demo" class="secondary-button" type="button">Запустить сравнение</button>
+              <div><strong id="context-lab-title">Один сценарий ТЗ — три стратегии</strong><p class="hint">Три реальных вызова модели на 15 сообщениях о функции отслеживания заказа для Android и iOS. Карточки показывают ответ, переданный контекст, фактические токены и то, какие детали стратегия может потерять.</p></div>
+              <button id="run-context-demo" class="secondary-button" type="button">Запустить 3 прогона</button>
+              <details id="strategy-scenario" class="strategy-scenario" open>
+                <summary>Исходный учебный диалог и сборка контекста</summary>
+                <p id="strategy-scenario-status" class="hint">Загружаем сценарий без вызова модели…</p>
+                <div id="strategy-system-prompt"></div>
+                <div id="strategy-dialogue" class="strategy-dialogue"></div>
+                <div id="strategy-facts"></div>
+                <div id="strategy-routing" class="strategy-routing"></div>
+              </details>
               <div id="context-demo-results" class="context-demo-results" aria-live="polite"></div>
+            </div>
+            <div class="context-lab branching-lab" aria-labelledby="branching-lab-title">
+              <div><strong id="branching-lab-title">Интерактивная лаборатория: настоящий fork</strong><p class="hint">Создайте checkpoint общей задачи, переключайтесь между Android- и iOS-веткой, затем запустите обе независимые ветки и сравните ответы с фактическими токенами.</p></div>
+              <button id="branching-create-checkpoint" class="secondary-button" type="button">1. Создать checkpoint</button>
+              <div id="branching-demo-state" class="branching-demo-state" aria-live="polite">Загружаем пример без вызова модели…</div>
+              <div id="branching-demo-switches" class="branch-list" hidden aria-label="Ветки учебного примера"></div>
+              <div id="branching-demo-history" class="strategy-dialogue" hidden></div>
+              <button id="run-branching-demo" class="secondary-button" type="button" disabled>3. Запустить и сравнить обе ветки</button>
+              <div id="branching-demo-results" class="context-demo-results" aria-live="polite"></div>
             </div>
             <div class="token-lab" aria-labelledby="token-lab-title">
               <div><strong id="token-lab-title">Три готовых примера для сравнения</strong><p class="hint">Это отдельные от вашего чата запуски на одинаковой задаче. Короткий и длинный сценарии вызывают модель и покажут фактические токены; сценарий лимита безопасно остановится до API.</p></div>
@@ -65,8 +97,8 @@
           </form>
           <div id="agent-run-result" class="token-lab-results" hidden aria-live="polite"></div>
 	          <div class="agent-actions">
-	            <button id="clear-agent-history" class="secondary-button" type="button">Удалить историю этого чата</button>
-	            <span class="hint">Удаляет сообщения только в текущем браузерном чате.</span>
+            <button id="clear-agent-history" class="secondary-button" type="button">Очистить чат и все данные</button>
+	            <span class="hint">Удаляет сообщения, токены, факты, ветки и checkpoints текущей сессии.</span>
 	          </div>
         </section>
 

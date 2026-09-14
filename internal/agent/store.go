@@ -16,13 +16,34 @@ type Store interface {
 	Save(map[string]ConversationState) error
 }
 
-// ConversationState is stored per browser session. Summary is deliberately a
-// separate field, never a fake dialogue turn.
+// ConversationState is stored per browser session. Facts, checkpoints and
+// branches remain structured state; no generated summary is persisted.
 type ConversationState struct {
-	Messages        []models.ChatMessage `json:"messages"`
-	Summary         string               `json:"summary,omitempty"`
-	RecentMessages  int                  `json:"recentMessages,omitempty"`
-	CompressedCount int                  `json:"compressedCount,omitempty"`
+	Strategy       models.ContextStrategy `json:"strategy,omitempty"`
+	Messages       []models.ChatMessage   `json:"messages"`
+	Facts          map[string]string      `json:"facts,omitempty"`
+	Usages         []models.ModelUsage    `json:"usages,omitempty"`
+	RecentMessages int                    `json:"recentMessages,omitempty"`
+	Branches       []BranchState          `json:"branches,omitempty"`
+	ActiveBranchID string                 `json:"activeBranchId,omitempty"`
+	Checkpoints    []CheckpointState      `json:"checkpoints,omitempty"`
+	NextBranch     int                    `json:"nextBranch,omitempty"`
+	NextCheckpoint int                    `json:"nextCheckpoint,omitempty"`
+}
+
+type BranchState struct {
+	ID                 string               `json:"id"`
+	Name               string               `json:"name"`
+	ParentCheckpointID string               `json:"parentCheckpointId,omitempty"`
+	Messages           []models.ChatMessage `json:"messages"`
+	Usages             []models.ModelUsage  `json:"usages,omitempty"`
+}
+
+type CheckpointState struct {
+	ID       string               `json:"id"`
+	Name     string               `json:"name"`
+	BranchID string               `json:"branchId"`
+	Messages []models.ChatMessage `json:"messages"`
 }
 
 // JSONStore writes through a temporary file, so an interrupted write never
@@ -47,7 +68,7 @@ func (s *JSONStore) Load() (map[string]ConversationState, error) {
 	var sessions map[string]ConversationState
 	if err := json.Unmarshal(data, &sessions); err != nil {
 		// Day 7/8 used a map of raw message arrays. Keep that local history
-		// readable when upgrading to the compressed format.
+		// readable when upgrading to structured context state.
 		var legacy map[string][]models.ChatMessage
 		if legacyErr := json.Unmarshal(data, &legacy); legacyErr != nil {
 			return nil, err
@@ -97,6 +118,15 @@ func copySessions(sessions map[string]ConversationState) map[string]Conversation
 	result := make(map[string]ConversationState, len(sessions))
 	for id, state := range sessions {
 		state.Messages = copyMessages(state.Messages)
+		state.Facts = copyFactsMap(state.Facts)
+		state.Usages = append([]models.ModelUsage(nil), state.Usages...)
+		for i := range state.Branches {
+			state.Branches[i].Messages = copyMessages(state.Branches[i].Messages)
+			state.Branches[i].Usages = append([]models.ModelUsage(nil), state.Branches[i].Usages...)
+		}
+		for i := range state.Checkpoints {
+			state.Checkpoints[i].Messages = copyMessages(state.Checkpoints[i].Messages)
+		}
 		result[id] = state
 	}
 	return result

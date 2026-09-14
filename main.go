@@ -48,8 +48,8 @@ func main() {
 	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
 	mux.Handle("/api/agent/chat", http.HandlerFunc(handler.AgentChat))
 	mux.Handle("/api/agent/token-demo", http.HandlerFunc(handler.TokenDemo))
-	mux.Handle("/api/agent/context-demo", http.HandlerFunc(handler.ContextDemo))
-	mux.Handle("/api/agent/recent-demo", http.HandlerFunc(handler.RecentDemo))
+	mux.Handle("/api/agent/strategy-demo", http.HandlerFunc(handler.ContextStrategyDemo))
+	mux.Handle("/api/agent/branching-demo", http.HandlerFunc(handler.BranchingDemo))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
