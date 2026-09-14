@@ -68,37 +68,56 @@ func TestTokenDemoOverflowDoesNotCallModel(t *testing.T) {
 	}
 }
 
-func TestContextDemoRunsFullAndCompressedVersions(t *testing.T) {
+func TestContextStrategyDemoRunsThreeStrategiesWithoutSummary(t *testing.T) {
 	client := &fakeClient{answer: "Проверяемый ответ", messageUsage: models.ModelUsage{InputTokens: 100, OutputTokens: 10}}
 	recorder := httptest.NewRecorder()
-	New(client).ContextDemo(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/context-demo", nil))
-	if recorder.Code != http.StatusOK || len(client.messageRequests) != 2 {
+	New(client).ContextStrategyDemo(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/strategy-demo?recentMessages=10", nil))
+	if recorder.Code != http.StatusOK || len(client.messageRequests) != 3 {
 		t.Fatalf("status %d, calls %d", recorder.Code, len(client.messageRequests))
 	}
-	if len(client.messageRequests[0]) <= len(client.messageRequests[1]) {
-		t.Fatal("compressed request must contain fewer messages")
+	if len(client.messageRequests[0]) >= len(client.messageRequests[2]) {
+		t.Fatal("branching request must contain more messages than sliding window")
 	}
-	var result models.ContextDemoResult
+	var result models.ContextStrategyDemoResult
 	if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.FullAnswer == "" || !strings.Contains(result.CompressedPromptPreview, "Сжатое резюме") {
+	if len(result.Runs) != 3 || result.Runs[0].IncludedMessages != 10 || result.Scenario.WindowSize != 10 || len(result.Scenario.Messages) != 15 || result.Runs[1].Answer == "" || !strings.Contains(result.Runs[1].PromptPreview, "Постоянные факты") {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
-func TestRecentDemoUsesSelectedNWithoutChangingChat(t *testing.T) {
-	client := &fakeClient{answer: "Android: сохранять ключ; сервер: дедупликация; iOS: не срочно", messageUsage: models.ModelUsage{InputTokens: 77, OutputTokens: 18}}
+func TestContextStrategyScenarioIsVisibleWithoutModelCall(t *testing.T) {
+	client := &fakeClient{}
 	recorder := httptest.NewRecorder()
-	New(client).RecentDemo(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/recent-demo", strings.NewReader(`{"recentMessages":4}`)))
-	if recorder.Code != http.StatusOK || len(client.messageRequests) != 1 {
+	New(client).ContextStrategyDemo(recorder, httptest.NewRequest(http.MethodGet, "/api/agent/strategy-demo", nil))
+	if recorder.Code != http.StatusOK || len(client.messageRequests) != 0 {
 		t.Fatalf("status %d, calls %d", recorder.Code, len(client.messageRequests))
 	}
-	var result models.RecentDemoResult
+	var scenario models.ContextStrategyScenario
+	if err := json.NewDecoder(recorder.Body).Decode(&scenario); err != nil {
+		t.Fatal(err)
+	}
+	if scenario.SystemPrompt == "" || len(scenario.Messages) != 15 || len(scenario.Facts) == 0 || scenario.WindowSize != 10 {
+		t.Fatalf("scenario = %#v", scenario)
+	}
+}
+
+func TestBranchingDemoForksTwoRequestsFromOneCheckpoint(t *testing.T) {
+	client := &fakeClient{answer: "Технический план", messageUsage: models.ModelUsage{InputTokens: 140, OutputTokens: 30}}
+	recorder := httptest.NewRecorder()
+	New(client).BranchingDemo(recorder, httptest.NewRequest(http.MethodPost, "/api/agent/branching-demo", nil))
+	if recorder.Code != http.StatusOK || len(client.messageRequests) != 2 {
+		t.Fatalf("status %d, calls %d", recorder.Code, len(client.messageRequests))
+	}
+	if !strings.Contains(client.messageRequests[0][len(client.messageRequests[0])-1].Content, "Android") || !strings.Contains(client.messageRequests[1][len(client.messageRequests[1])-1].Content, "iOS") {
+		t.Fatalf("branch prompts = %#v", client.messageRequests)
+	}
+	var result models.BranchingDemoResult
 	if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.RecentMessages != 4 || result.InputTokens != 77 || !strings.Contains(result.PromptPreview, "Сжатое резюме") {
+	if len(result.Scenario.Checkpoint) != 4 || len(result.Runs) != 2 || result.Runs[0].CheckpointMessages != 4 || result.Runs[0].InputTokens != 140 {
 		t.Fatalf("result = %#v", result)
 	}
 }
