@@ -17,16 +17,33 @@ const tokenLabResults = document.querySelector('#token-lab-results');
 const forceCacheMiss = document.querySelector('#force-cache-miss');
 const tokenDemoButtons = Array.from(document.querySelectorAll('.token-demo-button'));
 const agentRunResult = document.querySelector('#agent-run-result');
-const recentMessages = document.querySelector('#recent-messages');
-const compressionState = document.querySelector('#compression-state');
-const conversationSummary = document.querySelector('#conversation-summary');
-const conversationSummaryText = document.querySelector('#conversation-summary-text');
+const contextStrategy = document.querySelector('#context-strategy');
+const slidingPanel = document.querySelector('#sliding-panel');
+const slidingRecentMessages = document.querySelector('#sliding-recent-messages');
+const factsStrategyPanel = document.querySelector('#facts-strategy-panel');
+const factsRecentMessages = document.querySelector('#facts-recent-messages');
+const factsList = document.querySelector('#facts-list');
+const branchPanel = document.querySelector('#branch-panel');
+const checkpointName = document.querySelector('#checkpoint-name');
+const createCheckpoint = document.querySelector('#create-checkpoint');
+const checkpointSelect = document.querySelector('#checkpoint-select');
+const branchName = document.querySelector('#branch-name');
+const createBranch = document.querySelector('#create-branch');
+const branchList = document.querySelector('#branch-list');
 const runContextDemo = document.querySelector('#run-context-demo');
 const contextDemoResults = document.querySelector('#context-demo-results');
-const recentDemoN = document.querySelector('#recent-demo-n');
-const runRecentDemo = document.querySelector('#run-recent-demo');
-const recentDemoResults = document.querySelector('#recent-demo-results');
-const interactiveDemoVersion = 'marketplace-incident-v3';
+const strategyScenarioStatus = document.querySelector('#strategy-scenario-status');
+const strategySystemPrompt = document.querySelector('#strategy-system-prompt');
+const strategyDialogue = document.querySelector('#strategy-dialogue');
+const strategyFacts = document.querySelector('#strategy-facts');
+const strategyRouting = document.querySelector('#strategy-routing');
+const branchingCreateCheckpoint = document.querySelector('#branching-create-checkpoint');
+const branchingDemoState = document.querySelector('#branching-demo-state');
+const branchingDemoSwitches = document.querySelector('#branching-demo-switches');
+const branchingDemoHistory = document.querySelector('#branching-demo-history');
+const runBranchingDemo = document.querySelector('#run-branching-demo');
+const branchingDemoResults = document.querySelector('#branching-demo-results');
+const interactiveDemoVersion = 'context-strategies-branching-lab-v1';
 const temperature = document.querySelector('#temperature');
 const topP = document.querySelector('#top-p');
 const maxTokens = document.querySelector('#max-tokens');
@@ -60,7 +77,7 @@ const modelVersionsSources = document.querySelector('#model-versions-sources');
 // case changes, clear old DOM cards instead of presenting them as fresh data.
 if (sessionStorage.getItem('interactive-demo-version') !== interactiveDemoVersion) {
   contextDemoResults.replaceChildren();
-  recentDemoResults.replaceChildren();
+	branchingDemoResults.replaceChildren();
   sessionStorage.setItem('interactive-demo-version', interactiveDemoVersion);
 }
 
@@ -92,6 +109,9 @@ const temperatureRuns = new Map();
 let reasoningTask = '';
 let temperatureTask = '';
 let savedMaxTokens = maxTokens.value;
+let branchingDemoScenario = null;
+let branchingDemoActiveBranch = '';
+const visitedDemoBranches = new Set();
 
 function number(value) { return new Intl.NumberFormat('ru-RU').format(value || 0); }
 function dollars(value) { return `$${(value || 0).toFixed(value > 0 && value < 0.0001 ? 6 : 4)}`; }
@@ -113,7 +133,7 @@ function renderTokenReport(tokens, messages) {
   const input = tokens.requestTokens > 0 ? `точно ${number(tokens.requestTokens)}` : `оценка ${number(tokens.estimatedRequestTokens)}`;
   const values = [
     [input, '1. Текущий запрос к модели (prompt_tokens): системная инструкция + вся история + новое сообщение'],
-    [number(tokens.historyTokens), '2. Вся история диалога: только сохранённые реплики пользователя и агента'],
+    [number(tokens.historyTokens), '2. Сохранённый контекст: активные реплики и, в Facts-режиме, KV-блок'],
     [number(tokens.responseTokens), '3. Ответ модели (completion_tokens): сколько токенов сгенерировала модель'],
   ];
   tokenMetrics.replaceChildren(...values.map(([value, label]) => {
@@ -123,67 +143,179 @@ function renderTokenReport(tokens, messages) {
     item.append(main, caption); return item;
   }));
   tokenState.textContent = `Осталось примерно ${number(tokens.remainingContextTokens)} из ${number(tokens.contextLimitTokens)} токенов`;
-  tokenTotal.textContent = `За всю текущую сессию: модель уже получила ${number(tokens.cumulativeInputTokens)} входных токенов, сгенерировала ${number(tokens.cumulativeOutputTokens)} выходных; ориентировочная стоимость — ${dollars(tokens.cumulativeCostUsd)}. Сжатие убрало из повторяющихся запросов минимум ${number(tokens.compressionSavedTokens)} токенов старой истории.`;
+  tokenTotal.textContent = `За всю текущую сессию: модель уже получила ${number(tokens.cumulativeInputTokens)} входных токенов, сгенерировала ${number(tokens.cumulativeOutputTokens)} выходных; ориентировочная стоимость — ${dollars(tokens.cumulativeCostUsd)}.`;
   tokenNote.textContent = tokens.estimateNote || '';
 }
 
-function renderCompression(payload) {
-  if (payload.recentMessages) recentMessages.value = payload.recentMessages;
-  const count = payload.compressedCount || 0;
-  compressionState.textContent = count ? `В отдельное резюме сжато сообщений: ${number(count)}. В чате остаются последние ${number(payload.recentMessages)}.` : `Ранних сообщений пока нет: агент хранит до ${number(payload.recentMessages || recentMessages.value)} последних реплик полностью.`;
-  if (payload.summary) {
-    conversationSummary.hidden = false;
-    conversationSummaryText.textContent = payload.summary;
-  } else {
-    conversationSummary.hidden = true;
-    conversationSummaryText.textContent = '';
+function strategyTitle(strategy) {
+  return ({ sliding_window: 'Sliding Window', facts: 'Sticky Facts / Key-Value Memory', branching: 'Branching — ветки диалога' })[strategy] || strategy;
+}
+
+function selectedRecentMessages() {
+  return contextStrategy.value === 'facts' ? factsRecentMessages : slidingRecentMessages;
+}
+
+function demoWindowSize() {
+  const value = Number(selectedRecentMessages().value);
+  return Number.isInteger(value) && value >= 2 && value <= 40 ? value : 10;
+}
+
+function renderContextState(payload) {
+  if (payload.recentMessages) {
+    slidingRecentMessages.value = payload.recentMessages;
+    factsRecentMessages.value = payload.recentMessages;
   }
+  if (payload.strategy) contextStrategy.value = payload.strategy;
+  const isFacts = payload.strategy === 'facts'; const isBranching = payload.strategy === 'branching';
+  slidingPanel.hidden = isFacts || isBranching;
+  factsStrategyPanel.hidden = !isFacts;
+  branchPanel.hidden = !isBranching;
+  checkpointName.disabled = !isBranching;
+  createCheckpoint.disabled = !isBranching;
+  checkpointSelect.disabled = !isBranching;
+  branchName.disabled = !isBranching;
+  createBranch.disabled = !isBranching;
+  factsList.replaceChildren();
+  if (isFacts) (payload.facts || []).forEach((fact) => { const term = document.createElement('dt'); term.textContent = fact.key; const value = document.createElement('dd'); value.textContent = fact.value; factsList.append(term, value); });
+  checkpointSelect.replaceChildren();
+  if (isBranching) (payload.checkpoints || []).forEach((checkpoint) => { const option = document.createElement('option'); option.value = checkpoint.id; option.textContent = `${checkpoint.name} (${checkpoint.messageCount} реплик)`; checkpointSelect.append(option); });
+  branchList.replaceChildren();
+  if (isBranching) (payload.branches || []).forEach((branch) => { const button = document.createElement('button'); button.type = 'button'; button.className = branch.id === payload.activeBranchId ? 'branch-active' : 'secondary-button'; button.textContent = `${branch.name}: ${number(branch.messageCount)} реплик`; button.addEventListener('click', () => sendContextCommand({ action: 'switch_branch', branchId: branch.id })); branchList.append(button); });
 }
 
 function renderContextDemo(result) {
-  const saved = document.createElement('p');
-  saved.className = 'token-total';
-  saved.textContent = `Экономия входа: ${number(result.savedInputTokens)} токенов (${number(result.fullInputTokens)} → ${number(result.compressedInputTokens)}). Оцените сами: сохранились ли цепочка retry с новым idempotency key, серверная защита, причина продолжения после rollback и вывод по iOS?`;
+	if (result.scenario) renderStrategyScenario(result.scenario);
+  const saved = document.createElement('p'); saved.className = 'token-total';
+  saved.textContent = 'Сравните качество по полноте ТЗ, стабильность — по сохранению ранних деталей при повторных вопросах, расход — по входным токенам, а удобство — по понятности выбранного режима.';
   const comparison = document.createElement('div'); comparison.className = 'context-comparison';
-  for (const [title, answer, input, output, preview] of [['Без сжатия', result.fullAnswer, result.fullInputTokens, result.fullOutputTokens, result.fullPromptPreview], ['Со сжатием', result.compressedAnswer, result.compressedInputTokens, result.compressedOutputTokens, result.compressedPromptPreview]]) {
-    const card = document.createElement('article'); const heading = document.createElement('strong'); heading.textContent = title;
-    const metrics = document.createElement('p'); metrics.textContent = `Фактически: ${number(input)} входных + ${number(output)} выходных токенов.`;
-    const text = document.createElement('p'); text.textContent = answer;
-    const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Показать контекст запроса'; const pre = document.createElement('pre'); pre.className = 'token-prompt-preview'; pre.textContent = preview; details.append(summary, pre);
-    card.append(heading, metrics, text, details); comparison.append(card);
+  for (const run of result.runs || []) {
+    const card = document.createElement('article'); const heading = document.createElement('strong');
+    heading.textContent = run.title;
+    const metrics = document.createElement('p'); metrics.textContent = `Фактически: ${number(run.inputTokens)} входных + ${number(run.outputTokens)} выходных токенов; в запросе ${number(run.includedMessages)} диалоговых реплик.`;
+    const note = document.createElement('p'); note.className = 'hint'; note.textContent = run.contextNote;
+    const text = document.createElement('p'); text.textContent = run.answer;
+    const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Показать контекст запроса'; const pre = document.createElement('pre'); pre.className = 'token-prompt-preview'; pre.textContent = run.promptPreview; details.append(summary, pre);
+    card.append(heading, metrics, note, text, details); comparison.append(card);
   }
   contextDemoResults.replaceChildren(saved, comparison);
 }
 
-runContextDemo.addEventListener('click', async () => {
-  runContextDemo.disabled = true; contextDemoResults.textContent = 'Выполняем два одинаковых прогона…';
+function scenarioHeading(text) { const heading = document.createElement('h4'); heading.textContent = text; return heading; }
+
+function renderStrategyScenario(scenario) {
+  const messages = scenario.messages || [];
+  strategyScenarioStatus.textContent = `${scenario.title}. В нём ${number(messages.length)} диалоговых реплик; это фиксированные данные, ваш чат не меняется.`;
+  strategySystemPrompt.replaceChildren(scenarioHeading('Общий system prompt — попадает во все три прогона'));
+  const system = document.createElement('pre'); system.className = 'token-prompt-preview'; system.textContent = scenario.systemPrompt; strategySystemPrompt.append(system);
+  strategyDialogue.replaceChildren(scenarioHeading(`Полный учебный диалог — ${number(messages.length)} реплик`));
+  messages.forEach((message, index) => {
+    const item = document.createElement('article'); item.className = `strategy-dialogue-message strategy-dialogue-${message.role}`;
+    const role = document.createElement('strong'); role.textContent = `${index + 1}. ${message.role === 'user' ? 'Пользователь' : 'Агент'}`;
+    const content = document.createElement('p'); content.textContent = message.content;
+    item.append(role, content); strategyDialogue.append(item);
+  });
+  strategyFacts.replaceChildren(scenarioHeading('Sticky facts — дополнительный system-блок только для Facts'));
+  const facts = document.createElement('dl'); facts.className = 'facts-list';
+  (scenario.facts || []).forEach((fact) => { const key = document.createElement('dt'); key.textContent = fact.key; const value = document.createElement('dd'); value.textContent = fact.value; facts.append(key, value); });
+  strategyFacts.append(facts);
+  const firstWindowMessage = Math.max(1, messages.length - scenario.windowSize + 1);
+  strategyRouting.replaceChildren(scenarioHeading('Что фактически получит модель'));
+  const routing = document.createElement('ul');
+  for (const text of [
+    `Sliding Window: общий system prompt + реплики ${firstWindowMessage}–${messages.length}.`,
+    `Sticky Facts: общий system prompt + KV-блок выше + реплики ${firstWindowMessage}–${messages.length}.`,
+    `Branching: общий system prompt + все реплики 1–${messages.length} активной ветки.`,
+  ]) { const item = document.createElement('li'); item.textContent = text; routing.append(item); }
+  strategyRouting.append(routing);
+}
+
+async function loadStrategyScenario() {
   try {
-    const response = await fetch('/api/agent/context-demo', { method: 'POST', cache: 'no-store' });
+    const response = await fetch(`/api/agent/strategy-demo?recentMessages=${demoWindowSize()}`, { cache: 'no-store' });
+    const scenario = await readAgentResponse(response);
+    if (!response.ok) throw new Error(scenario.error || 'Не удалось получить сценарий.');
+    renderStrategyScenario(scenario);
+  } catch (error) { strategyScenarioStatus.textContent = readableFetchError(error, 'Не удалось загрузить учебный сценарий.'); }
+}
+
+runContextDemo.addEventListener('click', async () => {
+  runContextDemo.disabled = true; contextDemoResults.textContent = 'Выполняем три одинаковых прогона…';
+  try {
+    const response = await fetch(`/api/agent/strategy-demo?recentMessages=${demoWindowSize()}`, { method: 'POST', cache: 'no-store' });
     const payload = await readAgentResponse(response); if (!response.ok) throw new Error(payload.error || 'Не удалось выполнить сравнение.');
     renderContextDemo(payload);
   } catch (error) { contextDemoResults.textContent = readableFetchError(error, 'Не удалось выполнить сравнение.'); }
   finally { runContextDemo.disabled = false; }
 });
 
-function renderRecentDemo(result) {
-  const card = document.createElement('article'); card.className = 'token-scenario';
-  const title = document.createElement('strong'); title.textContent = `N = ${number(result.recentMessages)}: последние реплики без изменений`;
-  const metrics = document.createElement('span'); metrics.textContent = `Фактически: ${number(result.inputTokens)} входных + ${number(result.outputTokens)} выходных токенов.`;
-  const text = document.createElement('p'); text.textContent = `Ответ: ${result.answer}`;
-  const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Показать summary и собранный запрос'; const pre = document.createElement('pre'); pre.className = 'token-prompt-preview'; pre.textContent = `Summary ранних сообщений:\n${result.summary}\n\nЗапрос модели:\n${result.promptPreview}`; details.append(summary, pre);
-  card.append(title, metrics, text, details); recentDemoResults.replaceChildren(card);
+function renderBranchingDemoHistory() {
+  if (!branchingDemoScenario || !branchingDemoActiveBranch) return;
+  const branch = branchingDemoScenario.branches.find((item) => item.id === branchingDemoActiveBranch);
+  if (!branch) return;
+  branchingDemoSwitches.hidden = false; branchingDemoHistory.hidden = false;
+  branchingDemoSwitches.replaceChildren();
+  branchingDemoScenario.branches.forEach((item) => {
+    const button = document.createElement('button'); button.type = 'button'; button.className = item.id === branch.id ? 'branch-active' : 'secondary-button'; button.textContent = item.title;
+    button.addEventListener('click', () => { branchingDemoActiveBranch = item.id; visitedDemoBranches.add(item.id); renderBranchingDemoHistory(); });
+    branchingDemoSwitches.append(button);
+  });
+  branchingDemoHistory.replaceChildren(scenarioHeading(`Checkpoint: общая история (${number(branchingDemoScenario.checkpoint.length)} реплики)`));
+  [...branchingDemoScenario.checkpoint, ...branch.messages].forEach((message, index) => {
+    const item = document.createElement('article'); item.className = `strategy-dialogue-message strategy-dialogue-${message.role}`;
+    const role = document.createElement('strong');
+    const inCheckpoint = index < branchingDemoScenario.checkpoint.length;
+    role.textContent = `${inCheckpoint ? 'Checkpoint' : branch.title} · ${message.role === 'user' ? 'Пользователь' : 'Агент'}`;
+    const content = document.createElement('p'); content.textContent = message.content; item.append(role, content); branchingDemoHistory.append(item);
+  });
+  const allVisited = visitedDemoBranches.size === branchingDemoScenario.branches.length;
+  runBranchingDemo.disabled = !allVisited;
+  branchingDemoState.textContent = allVisited ? `Вы посмотрели обе ветки. Теперь можно выполнить два независимых запроса и сравнить токены.` : `Активна «${branch.title}». Нажмите вторую ветку, чтобы увидеть независимое продолжение от того же checkpoint.`;
 }
 
-runRecentDemo.addEventListener('click', async () => {
-  const n = Number(recentDemoN.value);
-  if (!Number.isInteger(n) || n < 2 || n > 12) { recentDemoResults.textContent = 'Для этого примера N должен быть целым числом от 2 до 12.'; recentDemoN.focus(); return; }
-  runRecentDemo.disabled = true; recentDemoResults.textContent = 'Собираем контекст и запускаем модель…';
+async function loadBranchingDemoScenario() {
   try {
-    const response = await fetch('/api/agent/recent-demo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify({ recentMessages: n }) });
-    const payload = await readAgentResponse(response); if (!response.ok) throw new Error(payload.error || 'Не удалось выполнить пример N.');
-    renderRecentDemo(payload);
-  } catch (error) { recentDemoResults.textContent = readableFetchError(error, 'Не удалось выполнить пример N.'); }
-  finally { runRecentDemo.disabled = false; }
+    const response = await fetch('/api/agent/branching-demo', { cache: 'no-store' });
+    const scenario = await readAgentResponse(response);
+    if (!response.ok) throw new Error(scenario.error || 'Не удалось получить пример веток.');
+    branchingDemoScenario = scenario;
+    branchingDemoState.textContent = `${scenario.title}. Общий checkpoint содержит ${number(scenario.checkpoint.length)} реплики; это отдельный учебный пример и он не меняет ваш чат.`;
+  } catch (error) { branchingDemoState.textContent = readableFetchError(error, 'Не удалось загрузить пример веток.'); }
+}
+
+branchingCreateCheckpoint.addEventListener('click', () => {
+  if (!branchingDemoScenario) { branchingDemoState.textContent = 'Пример ещё загружается.'; return; }
+  branchingCreateCheckpoint.disabled = true;
+  branchingCreateCheckpoint.textContent = '1. Checkpoint создан';
+  branchingDemoActiveBranch = branchingDemoScenario.branches[0].id;
+  visitedDemoBranches.clear(); visitedDemoBranches.add(branchingDemoActiveBranch);
+  renderBranchingDemoHistory();
+});
+
+function renderBranchingDemoResult(result) {
+  const totalInput = (result.runs || []).reduce((sum, run) => sum + run.inputTokens, 0);
+  const totalOutput = (result.runs || []).reduce((sum, run) => sum + run.outputTokens, 0);
+  const total = document.createElement('p'); total.className = 'token-total';
+  total.textContent = `Два независимых запроса: всего ${number(totalInput)} входных + ${number(totalOutput)} выходных токенов. Общий checkpoint отправлен в обоих запросах — это цена изоляции веток.`;
+  const comparison = document.createElement('div'); comparison.className = 'context-comparison';
+  (result.runs || []).forEach((run) => {
+    const card = document.createElement('article'); const title = document.createElement('strong'); title.textContent = run.title;
+    const metrics = document.createElement('p'); metrics.textContent = `Фактически: ${number(run.inputTokens)} входных + ${number(run.outputTokens)} выходных токенов. Контекст: ${number(run.checkpointMessages)} общих + ${number(run.branchMessages)} реплик этой ветки.`;
+    const answer = document.createElement('p'); answer.textContent = run.answer;
+    const details = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Показать контекст запроса'; const prompt = document.createElement('pre'); prompt.className = 'token-prompt-preview'; prompt.textContent = run.promptPreview; details.append(summary, prompt);
+    card.append(title, metrics, answer, details); comparison.append(card);
+  });
+  branchingDemoResults.replaceChildren(total, comparison);
+}
+
+runBranchingDemo.addEventListener('click', async () => {
+  runBranchingDemo.disabled = true; branchingDemoResults.textContent = 'Запускаем Android- и iOS-ветки независимо…';
+  try {
+    const response = await fetch('/api/agent/branching-demo', { method: 'POST', cache: 'no-store' });
+    const result = await readAgentResponse(response);
+    if (!response.ok) throw new Error(result.error || 'Не удалось запустить ветки.');
+    renderBranchingDemoResult(result);
+  } catch (error) { branchingDemoResults.textContent = readableFetchError(error, 'Не удалось выполнить сравнение веток.'); }
+  finally { runBranchingDemo.disabled = false; }
 });
 
 function renderDemoResult(result) {
@@ -221,6 +353,18 @@ function renderAgentRun(payload) {
   const prompt = document.createElement('pre'); prompt.className = 'token-prompt-preview'; prompt.textContent = lines.join('\n\n');
   dialogue.append(summary, prompt); item.append(title, value, cache, dialogue);
   agentRunResult.replaceChildren(item); agentRunResult.hidden = false;
+}
+
+// DELETE clears server-side conversation state. These cards are browser-only
+// renderings of that state or of its experiments, so clear them too.
+function clearChatResults() {
+  agentRunResult.replaceChildren(); agentRunResult.hidden = true;
+  tokenLabResults.replaceChildren();
+  contextDemoResults.replaceChildren();
+  branchingDemoResults.replaceChildren();
+  visitedDemoBranches.clear();
+  branchingDemoScenario = null;
+  branchingDemoActiveBranch = '';
 }
 
 async function runTokenDemo(scenario) {
@@ -272,11 +416,31 @@ async function readAgentResponse(response) {
   }
 }
 
+async function sendContextCommand(command) {
+  try {
+    const response = await fetch('/api/agent/chat', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(command) });
+    const payload = await readAgentResponse(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось изменить контекст.');
+    renderAgentHistory(payload.messages); renderTokenReport(payload.tokens, payload.messages); renderContextState(payload);
+    answer.textContent = command.action === 'set_strategy' ? `Выбрана стратегия: ${strategyTitle(payload.strategy)}.` : 'Контекст обновлён.';
+    answer.classList.remove('error'); status.textContent = 'Готово';
+  } catch (error) { answer.textContent = readableFetchError(error, 'Не удалось изменить контекст.'); answer.classList.add('error'); status.textContent = 'Ошибка'; }
+}
+
+contextStrategy.addEventListener('change', () => sendContextCommand({ action: 'set_strategy', strategy: contextStrategy.value }));
+slidingRecentMessages.addEventListener('input', () => { factsRecentMessages.value = slidingRecentMessages.value; loadStrategyScenario(); });
+factsRecentMessages.addEventListener('input', () => { slidingRecentMessages.value = factsRecentMessages.value; loadStrategyScenario(); });
+createCheckpoint.addEventListener('click', () => sendContextCommand({ action: 'checkpoint', name: checkpointName.value.trim() }));
+createBranch.addEventListener('click', () => {
+  if (!checkpointSelect.value) { answer.textContent = 'Сначала создайте checkpoint.'; answer.classList.add('error'); return; }
+  sendContextCommand({ action: 'create_branch', checkpointId: checkpointSelect.value, name: branchName.value.trim() });
+});
+
 async function loadAgentHistory() {
   try {
     const response = await fetch('/api/agent/chat', { cache: 'no-store' });
     const payload = await readAgentResponse(response);
-    if (response.ok) { renderAgentHistory(payload.messages); renderTokenReport(payload.tokens, payload.messages); renderCompression(payload); }
+    if (response.ok) { renderAgentHistory(payload.messages); renderTokenReport(payload.tokens, payload.messages); renderContextState(payload); }
   } catch (_) {
     tokenState.textContent = 'Не удалось получить данные чата.';
   }
@@ -296,13 +460,14 @@ agentForm.addEventListener('submit', async (event) => {
   answer.textContent = 'Агент обрабатывает сообщение…';
   answer.classList.remove('error');
   status.textContent = 'Агент отвечает…';
-  const n = Number(recentMessages.value);
-  if (!Number.isInteger(n) || n < 2 || n > 40) { answer.textContent = 'N должен быть целым числом от 2 до 40.'; answer.classList.add('error'); status.textContent = 'Ошибка'; recentMessages.focus(); agentSubmit.disabled = false; return; }
-  requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON({ message, recentMessages: n })}\n\nАгент при необходимости сжимает раннюю историю и обращается к LLM…`;
+  const activeRecentInput = selectedRecentMessages();
+  const n = contextStrategy.value === 'branching' ? 0 : Number(activeRecentInput.value);
+  if (contextStrategy.value !== 'branching' && (!Number.isInteger(n) || n < 2 || n > 40)) { answer.textContent = 'N должен быть целым числом от 2 до 40.'; answer.classList.add('error'); status.textContent = 'Ошибка'; activeRecentInput.focus(); agentSubmit.disabled = false; return; }
+  requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON({ message, recentMessages: n, strategy: contextStrategy.value })}\n\nАгент собирает выбранный контекст без summary и обращается к LLM…`;
   try {
     const response = await fetch('/api/agent/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
-      body: JSON.stringify({ message, recentMessages: n }),
+      body: JSON.stringify({ message, recentMessages: n, strategy: contextStrategy.value }),
     });
     const payload = await readAgentResponse(response);
     requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON({ httpStatus: response.status, messagesInSession: payload.messages?.length })}`;
@@ -310,7 +475,7 @@ agentForm.addEventListener('submit', async (event) => {
     requestLog.textContent += `\n\nОТВЕТ АГЕНТА\n${payload.answer}`;
     renderAgentHistory(payload.messages);
     renderTokenReport(payload.tokens, payload.messages);
-    renderCompression(payload);
+    renderContextState(payload);
     renderAgentRun(payload);
     answer.textContent = payload.answer;
     status.textContent = 'Готово';
@@ -326,7 +491,7 @@ agentForm.addEventListener('submit', async (event) => {
 });
 
 clearAgentHistory.addEventListener('click', async () => {
-  if (!window.confirm('Удалить все сообщения этого чата? Это действие нельзя отменить.')) return;
+  if (!window.confirm('Очистить все данные этого чата: сообщения, токены, факты, ветки и checkpoints? Это действие нельзя отменить.')) return;
   clearAgentHistory.disabled = true;
   try {
     const response = await fetch('/api/agent/chat', { method: 'DELETE', cache: 'no-store' });
@@ -334,12 +499,12 @@ clearAgentHistory.addEventListener('click', async () => {
     if (!response.ok) throw new Error(payload.error || 'Не удалось удалить историю диалога.');
     renderAgentHistory(payload.messages);
     renderTokenReport(payload.tokens, payload.messages);
-    renderCompression(payload);
-    agentRunResult.replaceChildren(); agentRunResult.hidden = true;
+    renderContextState(payload);
+    clearChatResults();
     answer.textContent = 'История этого чата удалена.';
     answer.classList.remove('error');
     status.textContent = 'Готово';
-    requestLog.textContent = 'БРАУЗЕР → BACKEND\nDELETE /api/agent/chat\n\nИстория текущей сессии удалена.';
+    requestLog.textContent = 'БРАУЗЕР → BACKEND\nDELETE /api/agent/chat\n\nУдалены все данные текущей сессии: сообщения, токены, факты, ветки и checkpoints.';
     agentMessage.focus();
   } catch (error) {
     answer.textContent = readableFetchError(error, 'Не удалось удалить историю диалога.');
@@ -1000,3 +1165,5 @@ form.addEventListener('submit', async (event) => {
 
 updateSubmitLabel();
 loadAgentHistory();
+loadStrategyScenario();
+loadBranchingDemoScenario();
