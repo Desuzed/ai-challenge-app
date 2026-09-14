@@ -4,356 +4,66 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
-    <title>AI Challenge App</title>
-    <link rel="stylesheet" href="style.css?v=day10-context-strategies-1">
+    <title>AI Challenge — чат</title>
+    <link rel="stylesheet" href="style.css?v=week-reset-1">
   </head>
   <body>
     <main class="container">
       <section class="card" aria-labelledby="title">
-        <p class="eyebrow">AI Challenge · День 10</p>
-        <h1 id="title">AI Challenge App</h1>
-        <p class="intro">Три стратегии контекста без summary: скользящее окно, отдельные sticky facts и независимые ветки диалога.</p>
+        <p class="eyebrow">AI Challenge</p>
+        <h1 id="title">Чат с агентом</h1>
 
-        <section class="agent-chat" aria-labelledby="agent-title">
-          <div class="answer-heading">
-            <h2 id="agent-title">Чат с агентом</h2>
-	            <span class="hint">История сохраняется для этого браузера</span>
+        <section class="agent-chat" aria-labelledby="chat-title">
+          <div class="section-heading">
+            <h2 id="chat-title">Диалог</h2>
+            <div class="heading-actions">
+              <span id="chat-status" class="hint">История сохраняется для этого браузера</span>
+              <button id="open-context-settings" class="secondary-button compact-button" type="button" aria-haspopup="dialog">Фильтр</button>
+            </div>
           </div>
+
           <div id="agent-history" class="agent-history" aria-live="polite">
             <p class="hint">История диалога появится здесь после первого сообщения.</p>
           </div>
-          <section class="compression-panel" aria-labelledby="compression-title">
-            <div><h3 id="compression-title">Стратегия управления контекстом</h3><p class="hint">Summary не используется: видно ровно те данные, которые отправляются модели.</p></div>
-            <label for="context-strategy">Стратегия</label>
-            <select id="context-strategy">
-              <option value="sliding_window">1. Sliding Window</option>
-              <option value="facts">2. Sticky Facts / Key-Value Memory</option>
-              <option value="branching">3. Branching — ветки диалога</option>
-            </select>
-            <section id="sliding-panel" class="strategy-panel" aria-labelledby="sliding-title">
-              <h4 id="sliding-title">Sliding Window</h4>
-              <p class="hint">Хранятся и отправляются только последние N сообщений; ранние реплики удаляются.</p>
-              <label for="sliding-recent-messages">Последних сообщений (N)</label>
-              <input id="sliding-recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
-            </section>
-            <section id="facts-strategy-panel" class="strategy-panel" hidden aria-labelledby="facts-title">
-              <h4 id="facts-title">Sticky Facts / Key-Value Memory</h4>
-              <p class="hint">Facts обновляются после каждой реплики пользователя. В модель уходят facts и последние N сообщений.</p>
-              <label for="facts-recent-messages">Последних сообщений (N)</label>
-              <input id="facts-recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
-              <details id="facts-panel"><summary>Показать sticky facts</summary><dl id="facts-list" class="facts-list"></dl></details>
-            </section>
-            <section id="branch-panel" class="strategy-panel recent-demo" hidden aria-labelledby="branch-title">
-              <h4 id="branch-title">Branching — ветки диалога</h4>
-              <div><strong>Checkpoint и ветки</strong><p class="hint">Создайте checkpoint, от него — две ветки, затем переключайтесь между ними. Сообщения веток независимы.</p></div>
-              <div class="branch-actions"><input id="checkpoint-name" type="text" placeholder="Название checkpoint"><button id="create-checkpoint" class="secondary-button" type="button">Создать checkpoint</button></div>
-              <div class="branch-actions"><select id="checkpoint-select" aria-label="Checkpoint"></select><input id="branch-name" type="text" placeholder="Название ветки"><button id="create-branch" class="secondary-button" type="button">Создать ветку</button></div>
-              <div id="branch-list" class="branch-list" aria-live="polite"></div>
-            </div>
-          </section>
-          <section class="token-panel" aria-labelledby="token-title">
-            <div class="answer-heading"><h3 id="token-title">Токены в этом чате</h3><span id="token-state" class="hint">Получаем данные чата…</span></div>
-            <p class="hint">После каждого ответа здесь будут три счётчика из задания: текущий запрос, вся история и ответ модели.</p>
-            <div id="token-metrics" class="token-metrics" aria-live="polite"></div>
-            <p id="token-total" class="token-total" aria-live="polite"></p>
-            <p id="token-note" class="hint"></p>
-            <div class="context-lab" aria-labelledby="context-lab-title">
-              <div><strong id="context-lab-title">Один сценарий ТЗ — три стратегии</strong><p class="hint">Три реальных вызова модели на 15 сообщениях о функции отслеживания заказа для Android и iOS. Карточки показывают ответ, переданный контекст, фактические токены и то, какие детали стратегия может потерять.</p></div>
-              <button id="run-context-demo" class="secondary-button" type="button">Запустить 3 прогона</button>
-              <details id="strategy-scenario" class="strategy-scenario" open>
-                <summary>Исходный учебный диалог и сборка контекста</summary>
-                <p id="strategy-scenario-status" class="hint">Загружаем сценарий без вызова модели…</p>
-                <div id="strategy-system-prompt"></div>
-                <div id="strategy-dialogue" class="strategy-dialogue"></div>
-                <div id="strategy-facts"></div>
-                <div id="strategy-routing" class="strategy-routing"></div>
-              </details>
-              <div id="context-demo-results" class="context-demo-results" aria-live="polite"></div>
-            </div>
-            <div class="context-lab branching-lab" aria-labelledby="branching-lab-title">
-              <div><strong id="branching-lab-title">Интерактивная лаборатория: настоящий fork</strong><p class="hint">Создайте checkpoint общей задачи, переключайтесь между Android- и iOS-веткой, затем запустите обе независимые ветки и сравните ответы с фактическими токенами.</p></div>
-              <button id="branching-create-checkpoint" class="secondary-button" type="button">1. Создать checkpoint</button>
-              <div id="branching-demo-state" class="branching-demo-state" aria-live="polite">Загружаем пример без вызова модели…</div>
-              <div id="branching-demo-switches" class="branch-list" hidden aria-label="Ветки учебного примера"></div>
-              <div id="branching-demo-history" class="strategy-dialogue" hidden></div>
-              <button id="run-branching-demo" class="secondary-button" type="button" disabled>3. Запустить и сравнить обе ветки</button>
-              <div id="branching-demo-results" class="context-demo-results" aria-live="polite"></div>
-            </div>
-            <div class="token-lab" aria-labelledby="token-lab-title">
-              <div><strong id="token-lab-title">Три готовых примера для сравнения</strong><p class="hint">Это отдельные от вашего чата запуски на одинаковой задаче. Короткий и длинный сценарии вызывают модель и покажут фактические токены; сценарий лимита безопасно остановится до API.</p></div>
-              <label class="inline-option"><input id="force-cache-miss" type="checkbox" checked><span>Не использовать cache:<br>добавить уникальный маркер к каждому запуску</span></label>
-              <div class="token-demo-actions" role="group" aria-label="Сценарии демонстрации токенов">
-                <button class="secondary-button token-demo-button" type="button" data-token-scenario="short">1. Короткий диалог</button>
-                <button class="secondary-button token-demo-button" type="button" data-token-scenario="long">2. Длинный диалог</button>
-                <button class="secondary-button token-demo-button" type="button" data-token-scenario="overflow">3. Больше лимита</button>
-              </div>
-              <div id="token-lab-results" class="token-lab-results"></div>
-            </div>
-          </section>
+
           <form id="agent-form">
-            <label for="agent-message">Ваше сообщение</label>
-            <textarea id="agent-message" name="message" rows="3" maxlength="32000" autofocus></textarea>
-            <button id="agent-submit" type="submit">Отправить агенту</button>
+            <label for="agent-message">Сообщение</label>
+            <textarea id="agent-message" name="message" rows="4" maxlength="32000" autofocus placeholder="Напишите сообщение…"></textarea>
+            <div class="agent-actions">
+              <button id="agent-submit" type="submit">Отправить</button>
+              <button id="clear-agent-history" class="secondary-button" type="button">Удалить всю историю</button>
+            </div>
           </form>
-          <div id="agent-run-result" class="token-lab-results" hidden aria-live="polite"></div>
-	          <div class="agent-actions">
-            <button id="clear-agent-history" class="secondary-button" type="button">Очистить чат и все данные</button>
-	            <span class="hint">Удаляет сообщения, токены, факты, ветки и checkpoints текущей сессии.</span>
-	          </div>
+
+          <p id="status" class="status" aria-live="polite"></p>
+
+          <dialog id="context-settings-dialog" aria-labelledby="context-title">
+            <form method="dialog" class="context-settings">
+              <div class="dialog-heading">
+                <h2 id="context-title">Управление контекстом</h2>
+                <button class="icon-button" value="cancel" type="submit" aria-label="Закрыть настройки">×</button>
+              </div>
+              <label for="context-strategy">Стратегия
+                <select id="context-strategy">
+                  <option value="sliding_window">Sliding Window</option>
+                  <option value="facts">Sticky Facts / Key-Value Memory</option>
+                </select>
+              </label>
+              <label for="recent-messages">Последних сообщений (N)
+                <input id="recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
+              </label>
+              <p id="strategy-description" class="hint">В модель отправляются только последние N сообщений. Ранние реплики удаляются.</p>
+              <button class="secondary-button dialog-close" value="close" type="submit">Готово</button>
+            </form>
+          </dialog>
         </section>
 
-        <details class="week-one">
-          <summary>1я неделя</summary>
-          <p class="hint">Уроки 1–5 сохранены без изменений. Раскройте блок, чтобы продолжить эксперименты с настройками, форматами и моделями.</p>
-        <form id="chat-form">
-          <label for="prompt">Одинаковая задача для всех запусков</label>
-          <textarea id="prompt" name="prompt" rows="2" maxlength="32000"></textarea>
-
-          <button id="submit" type="submit">Спросить DeepSeek</button>
-
-          <div class="lesson-tabs">
-            <div class="lesson-tablist" role="tablist" aria-label="Части челленджа" data-active-tab="generation">
-              <button id="generation-tab" class="lesson-tab" type="button" role="tab" aria-selected="true" aria-controls="generation-panel" tabindex="0" data-tab="generation">1. Настройки генерации</button>
-              <button id="response-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="response-panel" tabindex="-1" data-tab="response">2. Контроль ответа</button>
-              <button id="reasoning-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="reasoning-panel" tabindex="-1" data-tab="reasoning">3. Разные способы рассуждения</button>
-              <button id="temperature-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="temperature-panel" tabindex="-1" data-tab="temperature">4. Температура</button>
-              <button id="model-versions-tab" class="lesson-tab" type="button" role="tab" aria-selected="false" aria-controls="model-versions-panel" tabindex="-1" data-tab="model-versions">5. Версии моделей</button>
-              <span class="lesson-tab-indicator" aria-hidden="true"></span>
-            </div>
-
-            <section id="generation-panel" class="lesson-panel" role="tabpanel" aria-labelledby="generation-tab">
-              <fieldset>
-                <legend>Настройки генерации</legend>
-                <p class="hint">Одновременно можно использовать <code>temperature</code> или <code>top_p</code>, но не оба: это разные способы выбора следующего слова.</p>
-
-                <div class="mode-switch" role="radiogroup" aria-label="Способ сэмплирования">
-                  <label><input type="radio" name="sampling-mode" value="temperature" checked> Temperature</label>
-                  <label><input type="radio" name="sampling-mode" value="top-p"> Top P</label>
-                </div>
-
-                <div class="range-row">
-                  <label for="temperature">Temperature: <output id="temperature-value">0.7</output></label>
-                  <input id="temperature" type="range" min="0" max="2" step="0.1" value="0.7">
-                  <small>Ниже — предсказуемее; выше — разнообразнее.</small>
-                </div>
-                <div class="range-row">
-                  <label for="top-p">Top P: <output id="top-p-value">0.9</output></label>
-                  <input id="top-p" type="range" min="0" max="1" step="0.05" value="0.9" disabled>
-                  <small>Ограничивает выбор наиболее вероятными вариантами.</small>
-                </div>
-                <div class="range-row">
-                  <label for="max-tokens">Max tokens: <output id="max-tokens-value">512</output></label>
-                  <input id="max-tokens" type="range" min="64" max="2048" step="64" value="512">
-                  <small>Максимальная длина ответа, а не всего контекста.</small>
-                </div>
-              </fieldset>
-
-              <details class="unsupported">
-                <summary>Параметры из конспекта, которые сейчас не применяются</summary>
-                <label><input type="checkbox" disabled> Top K — нет в актуальной спецификации DeepSeek Chat Completions.</label>
-                <label><input type="checkbox" disabled> Seed — нет в актуальной спецификации этого endpoint.</label>
-                <label><input type="checkbox" disabled> Frequency penalty — устарел и не влияет на результат.</label>
-                <label><input type="checkbox" disabled> Presence penalty — устарел и не влияет на результат.</label>
-              </details>
-            </section>
-
-            <section id="response-panel" class="lesson-panel" role="tabpanel" aria-labelledby="response-tab" hidden>
-              <fieldset>
-                <legend>Режим контроля ответа</legend>
-                <p class="hint">Запускайте режимы по порядку: так легче увидеть, как каждое ограничение влияет на один и тот же ответ.</p>
-                <div class="response-modes" role="radiogroup" aria-label="Режим контроля ответа">
-                  <label><input type="radio" name="response-mode" value="unrestricted" checked> <span><b>1. Без ограничений</b><small>Обычный свободный ответ.</small></span></label>
-                  <label><input type="radio" name="response-mode" value="format"> <span><b>2. Только формат</b><small>Только JSON с ключами film, actors и answer.</small></span></label>
-                  <label><input type="radio" name="response-mode" value="length"> <span><b>3. Только длина</b><small>Ответ не длиннее 300 символов; лимит API — 120 токенов.</small></span></label>
-                  <label><input type="radio" name="response-mode" value="finish"> <span><b>4. Только завершение</b><small>Модель получает чёткое условие завершения; технический маркер скрыт.</small></span></label>
-                  <label><input type="radio" name="response-mode" value="all"> <span><b>5. Все ограничения</b><small>JSON, поле answer до 220 символов и контролируемое завершение.</small></span></label>
-                </div>
-              </fieldset>
-            </section>
-
-            <section id="temperature-panel" class="lesson-panel" role="tabpanel" aria-labelledby="temperature-tab" hidden>
-              <fieldset>
-                <legend>Один запрос — четыре температуры</legend>
-                <p class="hint">Нажмите «Запустить сравнение»: приложение четыре раза отправит один и тот же запрос. Меняется только <code>temperature</code>; <code>top_p</code> не используется, а лимит ответа остаётся одинаковым.</p>
-
-                <div class="test-case temperature-test-case" aria-labelledby="temperature-test-case-title">
-                  <div>
-                    <strong id="temperature-test-case-title">Пример запроса для эксперимента</strong>
-                    <p>Объясни школьнику в 2–3 предложениях, почему после дождя появляется радуга. Используй простой русский язык.</p>
-                  </div>
-                  <button id="fill-temperature-task" class="secondary-button" type="button">Подставить пример запроса</button>
-                  <p class="hint"><b>Факты для сверки:</b> в хорошем объяснении должны быть капли воды, преломление, внутреннее отражение и разложение света на цвета.</p>
-                </div>
-
-                <div class="temperature-settings" aria-label="Значения температуры для сравнения">
-                  <article>
-                    <code>temperature = 0</code>
-                    <p>Наиболее предсказуемый и сдержанный вариант.</p>
-                  </article>
-                  <article>
-                    <code>temperature = 0.7</code>
-                    <p>Баланс точности и выразительности.</p>
-                  </article>
-                  <article>
-                    <code>temperature = 1.2</code>
-                    <p>Больше неожиданных формулировок и идей.</p>
-                  </article>
-                  <article>
-                    <code>temperature = 1.8</code>
-                    <p>Максимальная вариативность и самые смелые варианты.</p>
-                  </article>
-                </div>
-
-                <div class="reasoning-actions">
-                  <button id="run-temperature-comparison" class="secondary-button" type="button">Запустить 4 сравнения</button>
-                  <span class="hint">Запуски идут последовательно, поэтому все четыре ответа используют одну и ту же формулировку запроса.</span>
-                </div>
-              </fieldset>
-
-              <details class="lesson-notes">
-                <summary>Что сравнивать в полученных ответах</summary>
-                <ol>
-                  <li><b>Точность:</b> все ли факты верны и отвечает ли текст на запрос. Для примера с радугой проверьте четыре факта выше.</li>
-                  <li><b>Креативность:</b> есть ли более оригинальные, понятные или образные формулировки, не подменяющие факты.</li>
-                  <li><b>Разнообразие:</b> отличаются ли лексика, структура и примеры. Для честной оценки повторите каждый вариант 2–3 раза.</li>
-                </ol>
-              </details>
-
-              <section class="temperature-guidance" aria-labelledby="temperature-guidance-title">
-                <div>
-                  <h3 id="temperature-guidance-title">Типичные ответы и когда их использовать</h3>
-                  <p class="hint">Это иллюстративные примеры, а не предсказание конкретного запуска: даже при одинаковой температуре ответы могут различаться.</p>
-                </div>
-                <div class="temperature-guidance-grid">
-                  <article>
-                    <strong><code>0</code> — стабильность</strong>
-                    <p class="temperature-example">«Радуга возникает, когда солнечный свет проходит через капли воды. Свет преломляется, отражается внутри капли и распадается на цвета».</p>
-                    <p><b>Подходит для:</b> извлечения данных, классификации, инструкций, повторяемых ответов и черновиков кода.</p>
-                  </article>
-                  <article>
-                    <strong><code>0.7</code> — баланс</strong>
-                    <p class="temperature-example">«Капли после дождя работают как маленькие призмы: солнечный свет преломляется, отражается внутри и превращается в цветную дугу».</p>
-                    <p><b>Подходит для:</b> диалогов, объяснений, писем и большинства обычных текстов.</p>
-                  </article>
-                  <article>
-                    <strong><code>1.2</code> — вариативность</strong>
-                    <p class="temperature-example">«После дождя миллионы капель превращают небо в большой калейдоскоп: солнечный луч изгибается, отражается и раскладывается на цветную дугу».</p>
-                    <p><b>Подходит для:</b> идей, названий, сторителлинга и поиска многих вариантов; факты стоит дополнительно проверять.</p>
-                  </article>
-                  <article>
-                    <strong><code>1.8</code> — максимум свободы</strong>
-                    <p class="temperature-example">«После дождя небо превращается в огромную палитру: солнечный свет ныряет в капли, преломляется, отражается внутри них и возвращается к нам цветной дугой».</p>
-                    <p><b>Подходит для:</b> свободного мозгового штурма, художественных образов и необычных концепций. Факты, расчёты и точные инструкции используйте только с обязательной проверкой.</p>
-                  </article>
-                </div>
-                <p class="hint temperature-caveat">Высокая температура повышает вариативность, но сама по себе не делает ответ неверным. <code>temperature = 0</code> также не гарантирует фактическую истинность.</p>
-              </section>
-
-              <section id="temperature-results-card" class="card temperature-results-card" aria-live="polite" aria-labelledby="temperature-results-title" hidden>
-                <div class="answer-heading">
-                  <h2 id="temperature-results-title">Результаты сравнения</h2>
-                  <span id="temperature-summary" role="status"></span>
-                </div>
-                <p id="temperature-comparison" class="hint">Запустите четыре одинаковых запроса с разной температурой.</p>
-                <div id="temperature-results" class="temperature-results"></div>
-              </section>
-            </section>
-
-            <section id="reasoning-panel" class="lesson-panel" role="tabpanel" aria-labelledby="reasoning-tab" hidden>
-              <fieldset>
-                <legend>Одна задача — четыре способа рассуждения</legend>
-                <p class="hint">Выберите способ, оставьте задачу и настройки одинаковыми, затем запускайте варианты по одному или все подряд. Результаты появятся в матрице сравнения ниже.</p>
-
-                <div class="test-case" aria-labelledby="test-case-title">
-                  <div>
-                    <strong id="test-case-title">Тестовые данные для задания</strong>
-                    <p>Четыре задачи A, B, C и D нужно выполнить в четыре последовательных слота: 1, 2, 3, 4. A выполняется раньше B; C — сразу после A; B — сразу перед D. В каком порядке выполняются задачи? Кратко проверьте все условия.</p>
-                  </div>
-                  <button id="fill-test-case" class="secondary-button" type="button">Подставить тестовую задачу</button>
-                  <p class="hint"><b>Эталон для сверки:</b> <code>A → C → B → D</code>. Не включайте его в сам запрос — он нужен только для оценки полученных решений.</p>
-                </div>
-
-                <div class="reasoning-modes" role="radiogroup" aria-label="Способ рассуждения">
-                  <label><input type="radio" name="reasoning-approach" value="direct" checked> <span><b>1. Прямой ответ</b><small>Одна задача без добавочной инструкции о способе решения.</small></span><em>1 API-запрос</em></label>
-                  <label><input type="radio" name="reasoning-approach" value="step_by_step"> <span><b>2. «Решай пошагово»</b><small>Модель получает явную просьбу показать проверяемые этапы и итог.</small></span><em>1 API-запрос</em></label>
-                  <label><input type="radio" name="reasoning-approach" value="prompt_designer"> <span><b>3. Конструктор промпта</b><small>Сначала создаётся рабочий промпт для решения, затем он применяется к исходной задаче.</small></span><em>2 API-запроса</em></label>
-                  <label><input type="radio" name="reasoning-approach" value="expert_panel"> <span><b>4. Группа экспертов</b><small>Аналитик, инженер и критик дают отдельные блоки, после чего формируется общий вывод.</small></span><em>1 API-запрос</em></label>
-                </div>
-
-                <label class="inline-option"><input id="show-prepared-prompt" type="checkbox" checked> Показывать созданный рабочий промпт в результате третьего способа</label>
-                <p class="hint no-limit-note"><b>Лимит ответа снят:</b> для финального решения урока 3 сервер использует максимум API — 8192 токена. Ограничение 720 токенов действует только на короткий шаг создания рабочего промпта.</p>
-                <p id="reasoning-mode-hint" class="hint">Прямой вариант создаёт базовую точку сравнения: оценивайте итог без дополнительного управления ходом решения.</p>
-                <div class="reasoning-actions">
-                  <button id="run-all-reasoning" class="secondary-button" type="button">Запустить все 4 способа</button>
-                  <span class="hint">Пакетный запуск сделает 5 API-вызовов: третий способ состоит из двух шагов.</span>
-                </div>
-              </fieldset>
-
-              <details class="lesson-notes">
-                <summary>Что именно сравнивать после запусков</summary>
-                <ol>
-                  <li>Совпадает ли порядок с эталоном <code>A → C → B → D</code> и соблюдены ли все три условия.</li>
-                  <li>Отличаются ли формулировки, полнота расчёта и проверка допущений.</li>
-                  <li>Какой верный ответ легче проверить: обычно полезны явные шаги или проверка критиком, но вывод делайте по фактическим результатам запуска.</li>
-                </ol>
-              </details>
-
-              <section id="reasoning-results-card" class="card reasoning-results-card" aria-live="polite" aria-labelledby="reasoning-results-title" hidden>
-                <div class="answer-heading">
-                  <h2 id="reasoning-results-title">Сравнение решений</h2>
-                  <span id="reasoning-summary" role="status"></span>
-                </div>
-                <p id="reasoning-comparison" class="hint">Запустите хотя бы один способ в третьем табе.</p>
-                <div id="reasoning-results" class="reasoning-results"></div>
-                <div class="comparison-rubric">
-                  <strong>Как выбрать наиболее точный результат</strong>
-                  <p>Сначала исключите ответы, не совпадающие с эталоном. Среди совпавших предпочтите тот, где верно учтено условие, виден проверяемый расчёт и нет лишних неподтверждённых допущений.</p>
-                </div>
-              </section>
-            </section>
-
-            <section id="model-versions-panel" class="lesson-panel" role="tabpanel" aria-labelledby="model-versions-tab" hidden>
-              <fieldset>
-                <legend>Версии моделей: один инцидентный промпт</legend>
-                <p class="hint">Запуск использует ровно полный промпт урока 5 (без редактирования и сокращения) и одинаковые параметры для всех моделей. Сервер подтверждает DeepSeek через <code>GET /models</code>, а для третьей карточки выбирает слабую бесплатную текстовую модель из актуального каталога OpenRouter.</p>
-                <div class="model-version-actions">
-                  <button id="run-model-versions" class="secondary-button" type="button">Сравнить Flash, Pro и слабую модель</button>
-                  <span id="model-versions-status" class="hint" role="status">Результаты ещё не получены.</span>
-                </div>
-              </fieldset>
-
-              <section id="model-versions-results" class="card model-versions-results" aria-live="polite" hidden>
-                <div class="answer-heading"><h2>Сравнение запусков</h2></div>
-                <p id="model-versions-catalog" class="hint"></p>
-                <div id="model-versions-cards" class="model-version-cards"></div>
-                <section class="economy-analysis" aria-labelledby="economy-title">
-                  <h3 id="economy-title">Экономика и качество</h3>
-                  <div id="model-versions-analysis">После запусков здесь появится сравнение скорости, токенов, стоимости и качества.</div>
-                </section>
-                <details class="lesson-notes"><summary>Полный неизменяемый промпт и источники</summary><pre id="model-versions-prompt"></pre><ul id="model-versions-sources"></ul></details>
-              </section>
-            </section>
-          </div>
-
-          <p class="hint">Ключ DeepSeek находится только на сервере и не передаётся в браузер или журнал.</p>
-        </form>
+        <details class="logs-card">
+          <summary>Логи</summary>
+          <pre id="request-log">Отправьте сообщение, чтобы увидеть журнал запроса.</pre>
         </details>
       </section>
-
-      <section class="card answer-card" aria-live="polite" aria-labelledby="answer-title">
-        <div class="answer-heading">
-          <h2 id="answer-title">Ответ модели</h2>
-          <span id="status" role="status"></span>
-        </div>
-        <p id="answer">Выберите режим и нажмите «Спросить DeepSeek».</p>
-      </section>
-
-      <details class="card logs-card" open>
-        <summary>Технический журнал (без API-ключа)</summary>
-        <p class="hint">Здесь видны данные, отправленные из браузера, безопасная сводка сервера и текст ответа модели. API-ключ и HTTP-заголовок Authorization намеренно не отображаются.</p>
-        <pre id="request-log">Журнал появится после отправки вопроса.</pre>
-      </details>
     </main>
-    <script src="app.js?v=day9-marketplace-incident-4"></script>
+    <script src="app.js?v=week-reset-1"></script>
   </body>
 </html>
