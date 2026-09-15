@@ -17,7 +17,9 @@ import (
 const (
 	endpoint       = "https://api.deepseek.com/chat/completions"
 	modelsEndpoint = "https://api.deepseek.com/models"
-	model          = "deepseek-v4-flash"
+	// Keep this in sync with the model ID returned by GET /models. The public
+	// API currently exposes deepseek-flash (not deepseek-v4-flash).
+	model = models.DeepSeekFlashModel
 )
 
 var (
@@ -104,6 +106,15 @@ func (c *Client) CompleteMessages(ctx context.Context, messages []models.ChatMes
 		return Completion{}, ErrNoAPIKey
 	}
 	return c.completeMessages(ctx, model, messages, settings, nil, nil, settings.MaxTokens)
+}
+
+// CompleteMessagesModel is used when the user explicitly selects a model
+// returned by the provider's catalogue in the chat UI.
+func (c *Client) CompleteMessagesModel(ctx context.Context, modelName string, messages []models.ChatMessage, settings models.GenerationSettings) (Completion, error) {
+	if c.apiKey == "" {
+		return Completion{}, ErrNoAPIKey
+	}
+	return c.completeMessages(ctx, strings.TrimSpace(modelName), messages, settings, nil, nil, settings.MaxTokens)
 }
 
 // CompleteModel runs a named catalog model with the same system instruction and
