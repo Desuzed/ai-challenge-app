@@ -59,6 +59,22 @@ func TestTokenDemoUsesSameFinalTaskAndCanForceCacheMiss(t *testing.T) {
 	}
 }
 
+func TestAgentModelsReturnsOnlyModelsSupportedByChat(t *testing.T) {
+	client := &fakeClient{catalog: []string{"other-model", models.DeepSeekProModel, models.DeepSeekFlashModel}}
+	recorder := httptest.NewRecorder()
+	New(client).AgentModels(recorder, httptest.NewRequest(http.MethodGet, "/api/agent/models", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	var response models.AgentModelsResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(response.Models, ","); got != "deepseek-flash,deepseek-v4-pro" {
+		t.Fatalf("models = %q", got)
+	}
+}
+
 func TestTokenDemoOverflowDoesNotCallModel(t *testing.T) {
 	client := &fakeClient{}
 	recorder := httptest.NewRecorder()
@@ -212,6 +228,7 @@ func TestChatErrors(t *testing.T) {
 		{"missing key", deepseek.ErrNoAPIKey, http.StatusServiceUnavailable},
 		{"rejected key", deepseek.ErrUnauthorized, http.StatusBadGateway},
 		{"rate limited", deepseek.ErrRateLimited, http.StatusTooManyRequests},
+		{"provider timeout", deepseek.ErrTimeout, http.StatusGatewayTimeout},
 		{"upstream", errors.New("network"), http.StatusBadGateway},
 	}
 	for _, test := range tests {
@@ -234,14 +251,14 @@ func TestChatOnlyAllowsPOST(t *testing.T) {
 }
 
 func TestModelVersionsUsesFullFixedPrompt(t *testing.T) {
-	client := &fakeClient{catalog: []string{"deepseek-v4-pro", "deepseek-v4-flash"}}
+	client := &fakeClient{catalog: []string{"deepseek-v4-pro", "deepseek-flash"}}
 	req := httptest.NewRequest(http.MethodPost, "/api/model-versions", strings.NewReader(`{}`))
 	recorder := httptest.NewRecorder()
 	New(client).ModelVersions(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d", recorder.Code)
 	}
-	if got := strings.Join(client.modelCalls, ","); got != "deepseek-v4-flash,deepseek-v4-pro" {
+	if got := strings.Join(client.modelCalls, ","); got != "deepseek-flash,deepseek-v4-pro" {
 		t.Fatalf("model calls = %q", got)
 	}
 	if client.modelPrompt != modelVersionsPrompt {
