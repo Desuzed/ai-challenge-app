@@ -24,7 +24,7 @@ func TestCompleteBuildsSafeDeepSeekRequest(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Model != "deepseek-v4-flash" || request.Thinking.Type != "disabled" || request.Temperature == nil || *request.Temperature != 0.7 || request.MaxTokens != 256 || request.TopP != nil {
+		if request.Model != "deepseek-flash" || request.Thinking.Type != "disabled" || request.Temperature == nil || *request.Temperature != 0.7 || request.MaxTokens != 256 || request.TopP != nil {
 			t.Fatalf("unexpected request: %#v", request)
 		}
 		if len(request.Messages) != 2 || request.Messages[1].Content != "Привет" {
