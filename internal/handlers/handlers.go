@@ -26,8 +26,10 @@ const (
 	defaultTokens        = 512
 	reasoningTimeout     = 95 * time.Second
 	modelVersionsTimeout = 4 * time.Minute
-	agentTimeout         = 55 * time.Second
-	agentSessionCookie   = "agent_session"
+	// Leave a small margin over the provider timeout set in main, so the agent
+	// can return the provider result instead of cancelling it prematurely.
+	agentTimeout       = 125 * time.Second
+	agentSessionCookie = "agent_session"
 )
 
 type completer interface {
@@ -391,9 +393,9 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
 	defer cancel()
-	result, err := h.agent.RespondWithStrategy(ctx, sessionID, input.Message, input.RecentMessages, input.Strategy)
+	result, err := h.agent.RespondWithOptions(ctx, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model)
 	if err != nil {
-		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) || strings.Contains(err.Error(), "N должен") || strings.Contains(err.Error(), "стратег") {
+		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) || strings.Contains(err.Error(), "N должен") || strings.Contains(err.Error(), "стратег") || strings.Contains(err.Error(), "модель") {
 			writeAgentError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -406,6 +408,37 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// AgentModels exposes only model IDs that the agent supports. The API key
+// remains in the server-side DeepSeek client and is never part of this JSON.
+func (h *Handler) AgentModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте GET-запрос.")
+		return
+	}
+	if h.modelVersionsClient == nil {
+		writeAgentError(w, http.StatusServiceUnavailable, "Список моделей сейчас недоступен.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	available, err := h.modelVersionsClient.ListModels(ctx)
+	if err != nil {
+		status, message := errorResponse(err)
+		writeAgentError(w, status, message)
+		return
+	}
+	allowed := map[string]bool{models.DeepSeekFlashModel: true, models.DeepSeekProModel: true}
+	result := make([]string, 0, len(available))
+	for _, name := range available {
+		if allowed[name] {
+			result = append(result, name)
+		}
+	}
+	sort.Strings(result)
+	writeJSON(w, http.StatusOK, models.AgentModelsResponse{Models: result})
 }
 
 func agentSessionID(w http.ResponseWriter, r *http.Request) (string, error) {
@@ -498,7 +531,7 @@ func (h *Handler) ModelVersions(w http.ResponseWriter, r *http.Request) {
 		available[id] = true
 	}
 	runs := []models.ModelVersionRun{
-		h.runModelVersion(ctx, "deepseek-v4-flash", "средний", available["deepseek-v4-flash"]),
+		h.runModelVersion(ctx, "deepseek-flash", "средний", available["deepseek-flash"]),
 		h.runModelVersion(ctx, "deepseek-v4-pro", "сильный", available["deepseek-v4-pro"]),
 	}
 	openRouterNote := "OpenRouter не настроен: задайте OPENROUTER_API_KEY в окружении сервера."
@@ -587,7 +620,7 @@ func estimateCost(model string, usage models.ModelUsage, at time.Time) (*float64
 		return nil, "Стоимость неизвестна: API не вернул usage."
 	}
 	var cacheHit, cacheMiss, output float64
-	if model == "deepseek-v4-flash" {
+	if model == "deepseek-flash" {
 		cacheHit, cacheMiss, output = .007, .22, .66
 	} else if model == "deepseek-v4-pro" {
 		cacheHit, cacheMiss, output = .022, .66, 1.98
@@ -851,6 +884,8 @@ func errorResponse(err error) (int, string) {
 		return http.StatusBadGateway, "DeepSeek не принял API-ключ. Проверьте его и перезапустите приложение."
 	case errors.Is(err, deepseek.ErrRateLimited):
 		return http.StatusTooManyRequests, "Слишком много запросов к DeepSeek. Повторите немного позже."
+	case errors.Is(err, deepseek.ErrTimeout):
+		return http.StatusGatewayTimeout, "DeepSeek не успел ответить за 120 секунд. Повторите запрос немного позже."
 	default:
 		return http.StatusBadGateway, "Не удалось получить ответ от DeepSeek. Попробуйте ещё раз."
 	}
