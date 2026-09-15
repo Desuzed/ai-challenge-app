@@ -13,9 +13,15 @@ import (
 
 type fakeCompleter struct {
 	requests [][]models.ChatMessage
+	models   []string
 	answer   string
 	err      error
 	usage    models.ModelUsage
+}
+
+func (f *fakeCompleter) CompleteMessagesModel(ctx context.Context, model string, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
+	f.models = append(f.models, model)
+	return f.CompleteMessages(ctx, messages, settings)
 }
 
 func TestPersistentAgentRestoresHistoryAfterRestart(t *testing.T) {
@@ -64,6 +70,39 @@ func TestClearRemovesPersistentSession(t *testing.T) {
 	}
 	if got := second.History("session-a"); len(got) != 0 {
 		t.Fatalf("history after clear = %#v, want empty", got)
+	}
+}
+
+func TestClearKeepsLongTermMemoryButRemovesDialogueAndWorkingMemory(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "agent-history.json"))
+	agent, err := NewPersistent(&fakeCompleter{answer: "Ответ"}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Respond(context.Background(), "session", "Текущая задача", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_message", Layer: models.MemoryWorking, Value: "Текущая задача"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_message", Layer: models.MemoryLongTerm, Category: "profile", Value: "Пишет по-русски"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Clear("session"); err != nil {
+		t.Fatal(err)
+	}
+	state := agent.State("session")
+	if len(state.Messages) != 0 || len(state.Memory.ShortTerm) != 0 || len(state.Memory.Working) != 0 {
+		t.Fatalf("cleared task state = %#v", state)
+	}
+	if got := state.Memory.LongTerm; len(got) != 1 || got[0].Value != "Пишет по-русски" {
+		t.Fatalf("long-term memory after clear = %#v", got)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "clear_memory_layer", Layer: models.MemoryLongTerm}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.State("session").Memory.LongTerm; len(got) != 0 {
+		t.Fatalf("long-term memory after separate clear = %#v", got)
 	}
 }
 
@@ -214,6 +253,111 @@ func TestFactsSurviveWindowAndAreSentAsSeparateSystemBlock(t *testing.T) {
 	}
 	if !strings.Contains(client.requests[2][1].Content, "Постоянные факты") || !strings.Contains(client.requests[2][1].Content, "сделать приложение") {
 		t.Fatalf("facts prompt = %#v", client.requests[2])
+	}
+}
+
+func TestMemoryLayersAreSeparateAndOnlyExplicitCommandsPersistWorkingAndLongTerm(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ"}
+	agent := New(client)
+	if _, err := agent.Respond(context.Background(), "session", "Обсуждаем экран заказа", 2); err != nil {
+		t.Fatal(err)
+	}
+	if state := agent.State("session"); len(state.Memory.Working) != 0 || len(state.Memory.LongTerm) != 0 {
+		t.Fatalf("ordinary dialogue must not auto-save explicit layers: %#v", state.Memory)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryWorking, Key: "task", Value: "Экран отслеживания заказа"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "profile", Key: "language", Value: "Русский"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "decisions", Key: "map", Value: "Не показывать координаты курьера"}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := agent.State("session")
+	if got := len(state.Memory.ShortTerm); got != 2 {
+		t.Fatalf("short-term entries = %d, want dialogue only", got)
+	}
+	if got := state.Memory.Working; len(got) != 1 || got[0].Key != "task" {
+		t.Fatalf("working memory = %#v", got)
+	}
+	if got := state.Memory.LongTerm; len(got) != 2 || got[0].Category != "decisions" || got[1].Category != "profile" {
+		t.Fatalf("long-term memory = %#v", got)
+	}
+
+	if _, err := agent.Respond(context.Background(), "session", "Что учесть в ответе?", 2); err != nil {
+		t.Fatal(err)
+	}
+	request := client.requests[len(client.requests)-1]
+	if !strings.Contains(request[1].Content, "Долговременная память") || !strings.Contains(request[1].Content, "profile.language: Русский") {
+		t.Fatalf("long-term block = %#v", request)
+	}
+	if !strings.Contains(request[2].Content, "Рабочая память") || !strings.Contains(request[2].Content, "task: Экран") {
+		t.Fatalf("working block = %#v", request)
+	}
+	if len(request) != 5 || request[3].Role != "assistant" || request[4].Content != "Что учесть в ответе?" {
+		t.Fatalf("short-term window in request = %#v", request)
+	}
+}
+
+func TestMemoryLayersPersistAndShortTermCannotBeWrittenDirectly(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "memory.json"))
+	first, err := NewPersistent(&fakeCompleter{answer: "Ответ"}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryWorking, Key: "deadline", Value: "пятница"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "knowledge", Key: "api", Value: "Используем существующее API"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryShortTerm, Key: "x", Value: "y"}); err == nil {
+		t.Fatal("short-term memory write succeeded")
+	}
+	second, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := second.State("session")
+	if len(state.Memory.ShortTerm) != 0 || len(state.Memory.Working) != 1 || len(state.Memory.LongTerm) != 1 {
+		t.Fatalf("restored layers = %#v", state.Memory)
+	}
+}
+
+func TestSelectedDialogueMessageIsStoredWholeWithoutUserKey(t *testing.T) {
+	agent := New(&fakeCompleter{answer: "Ответ агента"})
+	if _, err := agent.Respond(context.Background(), "session", "Не показывать карту курьера", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_message", Layer: models.MemoryWorking, Value: "Не показывать карту курьера"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_message", Layer: models.MemoryLongTerm, Category: "decisions", Value: "Ответ агента"}); err != nil {
+		t.Fatal(err)
+	}
+	state := agent.State("session")
+	if got := state.Memory.Working; len(got) != 1 || got[0].Key != "message-1" || got[0].Value != "Не показывать карту курьера" {
+		t.Fatalf("working memory = %#v", got)
+	}
+	if got := state.Memory.LongTerm; len(got) != 1 || got[0].Key != "message-2" || got[0].Category != "decisions" || got[0].Value != "Ответ агента" {
+		t.Fatalf("long-term memory = %#v", got)
+	}
+}
+
+func TestModelSelectionPersistsAndUsesSelectedModel(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ Pro"}
+	agent := New(client)
+	result, err := agent.RespondWithOptions(context.Background(), "session", "Составь план", 2, models.StrategySlidingWindow, models.DeepSeekProModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Model != models.DeepSeekProModel || len(client.models) != 1 || client.models[0] != models.DeepSeekProModel {
+		t.Fatalf("selected model state=%q calls=%#v", result.Model, client.models)
+	}
+	if state := agent.State("session"); state.Model != models.DeepSeekProModel {
+		t.Fatalf("model after response = %q", state.Model)
 	}
 }
 
