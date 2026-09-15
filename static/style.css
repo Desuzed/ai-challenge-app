@@ -48,6 +48,34 @@ h2 { margin: 0; font-size: 1.05rem; }
   background: #f8faff;
 }
 
+.token-panel {
+  display: grid;
+  gap: 7px;
+  padding: 14px 15px;
+  border: 1px solid #cde5d5;
+  border-radius: 10px;
+  background: #f3fbf5;
+}
+.token-panel #token-report { line-height: 1.65; }
+
+.memory-panel {
+  display: grid;
+  gap: 14px;
+  padding: 15px;
+  border: 1px solid #cbd9ff;
+  border-radius: 10px;
+  background: #fff;
+}
+.memory-layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.memory-layer { min-width: 0; padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
+.memory-layer h3 { margin: 0 0 5px; color: #395577; font-size: .92rem; }
+.memory-layer ul { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
+.memory-layer li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: #314155; font-size: .83rem; overflow-wrap: anywhere; }
+.memory-remove { flex: 0 0 auto; padding: 3px 6px; border: 1px solid #91a9e8; background: #fff; color: #315edb; font-size: .75rem; }
+.message-memory-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.message-memory-button { padding: 4px 7px; border: 1px solid #91a9e8; background: #fff; color: #315edb; font-size: .72rem; }
+.message-memory-button:hover { background: #edf3ff; }
+
 .section-heading {
   display: flex;
   align-items: baseline;
@@ -155,4 +183,5 @@ summary { cursor: pointer; color: #395577; font-weight: 650; }
   .section-heading { display: grid; grid-template-columns: 1fr; }
   .heading-actions { justify-content: space-between; }
   .agent-message { max-width: 94%; }
+  .memory-layers { grid-template-columns: 1fr; }
 }

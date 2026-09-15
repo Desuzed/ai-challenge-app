@@ -37,6 +37,22 @@
 
           <p id="status" class="status" aria-live="polite"></p>
 
+          <section class="token-panel" aria-labelledby="token-title">
+            <h2 id="token-title">Последний запрос к модели</h2>
+            <p id="token-report" class="hint" aria-live="polite">Отправьте сообщение, чтобы увидеть точный расход токенов и состав памяти в контексте.</p>
+          </section>
+
+          <section class="memory-panel" aria-labelledby="memory-title">
+            <div class="section-heading">
+              <div>
+                <h2 id="memory-title">Слои памяти</h2>
+                <p class="hint">Выберите реплику в диалоге и сохраните её целиком в нужный слой. Ключи вводить не нужно.</p>
+              </div>
+            </div>
+            <div id="memory-layers" class="memory-layers" aria-live="polite"></div>
+            <button id="clear-long-term-memory" class="secondary-button compact-button" type="button">Очистить долговременную память</button>
+          </section>
+
           <dialog id="context-settings-dialog" aria-labelledby="context-title">
             <form method="dialog" class="context-settings">
               <div class="dialog-heading">
@@ -49,6 +65,12 @@
                   <option value="facts">Sticky Facts / Key-Value Memory</option>
                 </select>
               </label>
+              <label for="agent-model">Модель
+                <select id="agent-model" disabled>
+                  <option value="deepseek-flash">Загрузка доступных моделей…</option>
+                </select>
+              </label>
+              <p id="model-description" class="hint">Выбор сохраняется для текущего браузерного чата.</p>
               <label for="recent-messages">Последних сообщений (N)
                 <input id="recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
               </label>

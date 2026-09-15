@@ -16,7 +16,7 @@ const (
 	outputUSDPerM      = 1.32
 )
 
-const estimateNote = "До ответа это консервативная оценка по символам; после ответа request/response — точные значения из usage API. Стоимость рассчитана по peak-тарифу DeepSeek V4 Flash и учитывает cache hit/miss."
+const estimateNote = "До ответа это консервативная оценка по символам; после ответа request/response — точные значения из usage API. Стоимость рассчитана по тарифу DeepSeek Flash и учитывает cache hit/miss."
 
 func estimateMessageTokens(message models.ChatMessage) int {
 	// Four service tokens approximate role/message framing. One token per three

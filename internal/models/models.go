@@ -6,6 +6,11 @@ type GenerationSettings struct {
 	MaxTokens   int      `json:"maxTokens"`
 }
 
+const (
+	DeepSeekFlashModel = "deepseek-flash"
+	DeepSeekProModel   = "deepseek-v4-pro"
+)
+
 // ChatMessage is a provider-neutral dialogue message. The agent owns the
 // sequence of these messages; the API client only serializes it for the LLM.
 type ChatMessage struct {
@@ -28,6 +33,35 @@ type Fact struct {
 	Value string `json:"value"`
 }
 
+// MemoryLayer names a deliberately separate part of the agent state. Short
+// term is the dialogue window; working and long-term memory are only changed
+// by an explicit memory command from the user.
+type MemoryLayer string
+
+const (
+	MemoryShortTerm MemoryLayer = "short_term"
+	MemoryWorking   MemoryLayer = "working"
+	MemoryLongTerm  MemoryLayer = "long_term"
+)
+
+// MemoryItem is a visible key-value record. Category is used in long-term
+// memory to keep a person profile, confirmed decisions and reusable knowledge
+// distinct from each other.
+type MemoryItem struct {
+	Layer    MemoryLayer `json:"layer"`
+	Category string      `json:"category,omitempty"`
+	Key      string      `json:"key"`
+	Value    string      `json:"value"`
+}
+
+// MemoryLayers is returned with every agent response, so it is always clear
+// which information is in which layer and will reach the model.
+type MemoryLayers struct {
+	ShortTerm []ChatMessage `json:"shortTerm"`
+	Working   []MemoryItem  `json:"working"`
+	LongTerm  []MemoryItem  `json:"longTerm"`
+}
+
 type ConversationBranch struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -46,6 +80,7 @@ type AgentRequest struct {
 	Message        string          `json:"message"`
 	RecentMessages int             `json:"recentMessages"`
 	Strategy       ContextStrategy `json:"strategy,omitempty"`
+	Model          string          `json:"model,omitempty"`
 }
 
 // ContextCommand changes context mode or the active branch without asking the
@@ -56,6 +91,11 @@ type ContextCommand struct {
 	Name         string          `json:"name,omitempty"`
 	CheckpointID string          `json:"checkpointId,omitempty"`
 	BranchID     string          `json:"branchId,omitempty"`
+	Layer        MemoryLayer     `json:"layer,omitempty"`
+	Category     string          `json:"category,omitempty"`
+	Key          string          `json:"key,omitempty"`
+	Value        string          `json:"value,omitempty"`
+	Model        string          `json:"model,omitempty"`
 }
 
 type AgentResponse struct {
@@ -65,10 +105,17 @@ type AgentResponse struct {
 	Tokens          AgentTokenReport         `json:"tokens"`
 	Strategy        ContextStrategy          `json:"strategy"`
 	Facts           []Fact                   `json:"facts,omitempty"`
+	Memory          MemoryLayers             `json:"memory"`
 	ActiveBranchID  string                   `json:"activeBranchId,omitempty"`
 	Branches        []ConversationBranch     `json:"branches,omitempty"`
 	Checkpoints     []ConversationCheckpoint `json:"checkpoints,omitempty"`
 	RecentMessages  int                      `json:"recentMessages"`
+	Model           string                   `json:"model"`
+}
+
+// AgentModelsResponse is the safe, key-free catalogue used by the chat UI.
+type AgentModelsResponse struct {
+	Models []string `json:"models"`
 }
 
 // AgentTokenReport makes the cost of carrying a dialogue visible. Values named

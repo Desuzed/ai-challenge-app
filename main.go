@@ -20,6 +20,9 @@ const (
 	localEnvFile     = ".env"
 	apiKeyEnvVar     = "DEEPSEEK_API_KEY"
 	agentHistoryFile = ".local/agent-history.json"
+	// Flash can spend longer than a short HTTP timeout preparing a first
+	// completion, while the lightweight /models endpoint remains fast.
+	deepSeekRequestTimeout = 120 * time.Second
 )
 
 func main() {
@@ -33,7 +36,7 @@ func main() {
 		log.Print("warning: local API key file could not be read; API key may be unavailable")
 	}
 
-	client := deepseek.NewClient(apiKey, 45*time.Second)
+	client := deepseek.NewClient(apiKey, deepSeekRequestTimeout)
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
 	handler := handlers.New(client)
@@ -47,6 +50,7 @@ func main() {
 	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))
 	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
 	mux.Handle("/api/agent/chat", http.HandlerFunc(handler.AgentChat))
+	mux.Handle("/api/agent/models", http.HandlerFunc(handler.AgentModels))
 	mux.Handle("/api/agent/token-demo", http.HandlerFunc(handler.TokenDemo))
 	mux.Handle("/api/agent/strategy-demo", http.HandlerFunc(handler.ContextStrategyDemo))
 	mux.Handle("/api/agent/branching-demo", http.HandlerFunc(handler.BranchingDemo))

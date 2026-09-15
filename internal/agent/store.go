@@ -29,6 +29,13 @@ type ConversationState struct {
 	Checkpoints    []CheckpointState      `json:"checkpoints,omitempty"`
 	NextBranch     int                    `json:"nextBranch,omitempty"`
 	NextCheckpoint int                    `json:"nextCheckpoint,omitempty"`
+	NextMemoryItem int                    `json:"nextMemoryItem,omitempty"`
+	Model          string                 `json:"model,omitempty"`
+	// These fields intentionally do not share storage with Messages or Facts.
+	// They make the three memory layers inspectable in the JSON file as well as
+	// in the API response.
+	WorkingMemory  map[string]string            `json:"workingMemory,omitempty"`
+	LongTermMemory map[string]map[string]string `json:"longTermMemory,omitempty"`
 }
 
 type BranchState struct {
@@ -119,6 +126,8 @@ func copySessions(sessions map[string]ConversationState) map[string]Conversation
 	for id, state := range sessions {
 		state.Messages = copyMessages(state.Messages)
 		state.Facts = copyFactsMap(state.Facts)
+		state.WorkingMemory = copyFactsMap(state.WorkingMemory)
+		state.LongTermMemory = copyLongTermMemory(state.LongTermMemory)
 		state.Usages = append([]models.ModelUsage(nil), state.Usages...)
 		for i := range state.Branches {
 			state.Branches[i].Messages = copyMessages(state.Branches[i].Messages)
@@ -128,6 +137,14 @@ func copySessions(sessions map[string]ConversationState) map[string]Conversation
 			state.Checkpoints[i].Messages = copyMessages(state.Checkpoints[i].Messages)
 		}
 		result[id] = state
+	}
+	return result
+}
+
+func copyLongTermMemory(memory map[string]map[string]string) map[string]map[string]string {
+	result := make(map[string]map[string]string, len(memory))
+	for category, values := range memory {
+		result[category] = copyFactsMap(values)
 	}
 	return result
 }
