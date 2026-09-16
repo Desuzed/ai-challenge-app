@@ -85,7 +85,7 @@ func TestClearKeepsLongTermMemoryButRemovesDialogueAndWorkingMemory(t *testing.T
 	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_message", Layer: models.MemoryWorking, Value: "Текущая задача"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_message", Layer: models.MemoryLongTerm, Category: "profile", Value: "Пишет по-русски"}); err != nil {
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_message", Layer: models.MemoryLongTerm, Category: "knowledge", Value: "Пишет по-русски"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := agent.Clear("session"); err != nil {
@@ -268,7 +268,7 @@ func TestMemoryLayersAreSeparateAndOnlyExplicitCommandsPersistWorkingAndLongTerm
 	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryWorking, Key: "task", Value: "Экран отслеживания заказа"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "profile", Key: "language", Value: "Русский"}); err != nil {
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "knowledge", Key: "language", Value: "Русский"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "decisions", Key: "map", Value: "Не показывать координаты курьера"}); err != nil {
@@ -282,7 +282,7 @@ func TestMemoryLayersAreSeparateAndOnlyExplicitCommandsPersistWorkingAndLongTerm
 	if got := state.Memory.Working; len(got) != 1 || got[0].Key != "task" {
 		t.Fatalf("working memory = %#v", got)
 	}
-	if got := state.Memory.LongTerm; len(got) != 2 || got[0].Category != "decisions" || got[1].Category != "profile" {
+	if got := state.Memory.LongTerm; len(got) != 2 || got[0].Category != "decisions" || got[1].Category != "knowledge" {
 		t.Fatalf("long-term memory = %#v", got)
 	}
 
@@ -290,7 +290,7 @@ func TestMemoryLayersAreSeparateAndOnlyExplicitCommandsPersistWorkingAndLongTerm
 		t.Fatal(err)
 	}
 	request := client.requests[len(client.requests)-1]
-	if !strings.Contains(request[1].Content, "Долговременная память") || !strings.Contains(request[1].Content, "profile.language: Русский") {
+	if !strings.Contains(request[1].Content, "Долговременная память") || !strings.Contains(request[1].Content, "knowledge.language: Русский") {
 		t.Fatalf("long-term block = %#v", request)
 	}
 	if !strings.Contains(request[2].Content, "Рабочая память") || !strings.Contains(request[2].Content, "task: Экран") {
@@ -323,6 +323,146 @@ func TestMemoryLayersPersistAndShortTermCannotBeWrittenDirectly(t *testing.T) {
 	state := second.State("session")
 	if len(state.Memory.ShortTerm) != 0 || len(state.Memory.Working) != 1 || len(state.Memory.LongTerm) != 1 {
 		t.Fatalf("restored layers = %#v", state.Memory)
+	}
+}
+
+func TestProfileIsSentForEveryRequestAndKeepsProfilesIndependent(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ"}
+	agent := New(client)
+	anna := models.UserProfile{Name: "Анна", Style: "деловой", Format: "ровно 3 пункта", Constraints: "без англицизмов"}
+	maxim := models.UserProfile{Name: "Максим", Style: "неформальный", Format: "подробный разбор", Constraints: "добавь пример к каждому совету"}
+	if _, err := agent.ApplyContextCommand("anna", models.ContextCommand{Action: "set_profile", Profile: anna}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("maxim", models.ContextCommand{Action: "set_profile", Profile: maxim}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Respond(context.Background(), "anna", "Как начать изучать Go?"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Respond(context.Background(), "maxim", "Как начать изучать Go?"); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(client.requests))
+	}
+	annaPrompt, maximPrompt := client.requests[0][1].Content, client.requests[1][1].Content
+	if !strings.Contains(annaPrompt, "Анна") || !strings.Contains(annaPrompt, "ровно 3 пункта") || !strings.Contains(annaPrompt, "без англицизмов") {
+		t.Fatalf("Anna profile was not sent: %q", annaPrompt)
+	}
+	if !strings.Contains(maximPrompt, "Максим") || !strings.Contains(maximPrompt, "подробный разбор") || !strings.Contains(maximPrompt, "добавь пример") {
+		t.Fatalf("Maxim profile was not sent: %q", maximPrompt)
+	}
+	if annaPrompt == maximPrompt {
+		t.Fatal("different profiles produced identical model context")
+	}
+	if got := agent.State("anna").Profile; got.Name != anna.Name || got.Style != anna.Style || got.Format != anna.Format || got.Constraints != anna.Constraints || got.ID == "" {
+		t.Fatalf("Anna profile = %#v, want saved values %#v", got, anna)
+	}
+	if err := agent.Clear("anna"); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.State("anna").Profile; got.Name != anna.Name || got.ID == "" {
+		t.Fatalf("profile after clearing task = %#v, want saved values %#v", got, anna)
+	}
+}
+
+func TestProfilePersistsAfterRestart(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "profile.json"))
+	first, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := models.UserProfile{Name: "Ирина", Style: "лаконичный", Format: "список", Constraints: "не более 4 пунктов"}
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "set_profile", Profile: want}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.State("session").Profile; got.Name != want.Name || got.Style != want.Style || got.ID == "" {
+		t.Fatalf("restored profile = %#v, want saved values %#v", got, want)
+	}
+}
+
+func TestNamedProfilesAreSelectedPerSessionAndLongTermMemoryIsGlobalPerUser(t *testing.T) {
+	client := &fakeCompleter{answer: "Ответ"}
+	agent := New(client)
+	const userID = "user-a"
+	chemistry := models.UserProfile{Name: "Химик", Perspective: "химик-популяризатор: объясняй причины и механизмы", Style: "научно-популярный", Format: "короткий пост"}
+	psychology := models.UserProfile{Name: "Психолог", Perspective: "психолог-практик: объясняй поведение без диагнозов", Style: "бережный", Format: "пост с примером"}
+
+	chemistryState, err := agent.ApplyContextCommandForUser(userID, "session-post", models.ContextCommand{Action: "create_profile", Profile: chemistry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chemistryID := chemistryState.ActiveProfileID
+	psychologyState, err := agent.ApplyContextCommandForUser(userID, "session-post", models.ContextCommand{Action: "create_profile", Profile: psychology})
+	if err != nil {
+		t.Fatal(err)
+	}
+	psychologyID := psychologyState.ActiveProfileID
+	if chemistryID == psychologyID || len(psychologyState.Profiles) != 2 {
+		t.Fatalf("profiles = %#v", psychologyState.Profiles)
+	}
+	if _, err := agent.ApplyContextCommandForUser(userID, "session-post", models.ContextCommand{Action: "set_active_profile", ProfileID: chemistryID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommandForUser(userID, "session-review", models.ContextCommand{Action: "set_active_profile", ProfileID: psychologyID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.RespondWithUserOptions(context.Background(), userID, "session-post", "Напиши пост о кофеине", 2, models.StrategySlidingWindow, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.RespondWithUserOptions(context.Background(), userID, "session-review", "Напиши пост о кофеине", 2, models.StrategySlidingWindow, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(client.requests[0][1].Content, "химик-популяризатор") || !strings.Contains(client.requests[1][1].Content, "психолог-практик") {
+		t.Fatalf("profile prompts = %#v", client.requests)
+	}
+	if agent.StateForUser(userID, "session-post").ActiveProfileID != chemistryID || agent.StateForUser(userID, "session-review").ActiveProfileID != psychologyID {
+		t.Fatal("active profile must belong to a session")
+	}
+	if _, err := agent.ApplyContextCommandForUser(userID, "session-post", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "knowledge", Key: "audience", Value: "Пишем для начинающих"}); err != nil {
+		t.Fatal(err)
+	}
+	otherSession := agent.StateForUser(userID, "session-review")
+	if len(otherSession.Memory.LongTerm) != 1 || otherSession.Memory.LongTerm[0].Value != "Пишем для начинающих" {
+		t.Fatalf("global long-term memory = %#v", otherSession.Memory.LongTerm)
+	}
+	if got := agent.StateForUser("user-b", "other-session").Memory.LongTerm; len(got) != 0 {
+		t.Fatalf("another user's memory leaked: %#v", got)
+	}
+}
+
+func TestUserProfilesAndGlobalMemoryPersistAcrossRestart(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "user-state.json"))
+	first, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const userID = "user-persisted"
+	created, err := first.ApplyContextCommandForUser(userID, "first-session", models.ContextCommand{Action: "create_profile", Profile: models.UserProfile{Name: "Экономист", Perspective: "экономист, объясняй стимулы и последствия"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyContextCommandForUser(userID, "first-session", models.ContextCommand{Action: "save_memory", Layer: models.MemoryLongTerm, Category: "knowledge", Key: "audience", Value: "Предприниматели"}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := second.StateForUser(userID, "second-session")
+	if len(state.Profiles) != 1 || state.Profiles[0].Name != "Экономист" || len(state.Memory.LongTerm) != 1 || state.Memory.LongTerm[0].Value != "Предприниматели" {
+		t.Fatalf("restored user state = %#v", state)
+	}
+	if _, err := second.ApplyContextCommandForUser(userID, "second-session", models.ContextCommand{Action: "set_active_profile", ProfileID: created.ActiveProfileID}); err != nil {
+		t.Fatal(err)
+	}
+	if got := second.StateForUser(userID, "second-session").Profile.Name; got != "Экономист" {
+		t.Fatalf("active profile after restart = %q", got)
 	}
 }
 

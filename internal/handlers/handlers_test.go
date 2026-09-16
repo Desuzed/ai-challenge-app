@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"ai-challenge-app/internal/agent"
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/models"
 )
@@ -72,6 +73,30 @@ func TestAgentModelsReturnsOnlyModelsSupportedByChat(t *testing.T) {
 	}
 	if got := strings.Join(response.Models, ","); got != "deepseek-flash,deepseek-v4-pro" {
 		t.Fatalf("models = %q", got)
+	}
+}
+
+func TestAgentChatAppliesSavedProfileToRequest(t *testing.T) {
+	client := &fakeClient{answer: "Короткий ответ"}
+	handler := New(client)
+	handler.SetAgent(agent.New(client))
+	cookie := &http.Cookie{Name: agentSessionCookie, Value: "test-session-id-which-is-long-enough"}
+	profileRequest := httptest.NewRequest(http.MethodPatch, "/api/agent/chat", strings.NewReader(`{"action":"set_profile","profile":{"name":"Анна","style":"деловой","format":"3 пункта","constraints":"без англицизмов"}}`))
+	profileRequest.AddCookie(cookie)
+	profileRecorder := httptest.NewRecorder()
+	handler.AgentChat(profileRecorder, profileRequest)
+	if profileRecorder.Code != http.StatusOK {
+		t.Fatalf("profile status = %d: %s", profileRecorder.Code, profileRecorder.Body.String())
+	}
+	chatRequest := httptest.NewRequest(http.MethodPost, "/api/agent/chat", strings.NewReader(`{"message":"Как начать изучать Go?"}`))
+	chatRequest.AddCookie(cookie)
+	chatRecorder := httptest.NewRecorder()
+	handler.AgentChat(chatRecorder, chatRequest)
+	if chatRecorder.Code != http.StatusOK || len(client.messageRequests) != 1 {
+		t.Fatalf("chat status = %d, calls = %d", chatRecorder.Code, len(client.messageRequests))
+	}
+	if profile := client.messageRequests[0][1].Content; !strings.Contains(profile, "Активный профиль") || !strings.Contains(profile, "Анна") || !strings.Contains(profile, "3 пункта") {
+		t.Fatalf("profile context = %q", profile)
 	}
 }
 

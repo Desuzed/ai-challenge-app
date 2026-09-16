@@ -37,6 +37,40 @@
 
           <p id="status" class="status" aria-live="polite"></p>
 
+          <section class="profile-panel" aria-labelledby="profile-title">
+            <div class="section-heading">
+              <div>
+                <h2 id="profile-title">Профили агента</h2>
+                <p class="hint">Выберите роль или контекст для текущей сессии. Создавайте любые профили: для задачи, аудитории, стиля работы или экспертной роли.</p>
+              </div>
+            </div>
+            <div class="profile-picker">
+              <label for="profile-select">Активный профиль
+                <select id="profile-select"><option value="">Без профиля</option></select>
+              </label>
+              <button id="new-profile" class="secondary-button compact-button" type="button">Новый профиль</button>
+              <button id="delete-profile" class="secondary-button compact-button" type="button" disabled>Удалить профиль</button>
+            </div>
+            <form id="profile-form" class="profile-form">
+              <label for="profile-name">Название профиля
+                <input id="profile-name" maxlength="2000" required placeholder="Например: Химик">
+              </label>
+              <label for="profile-perspective">Роль или контекст
+                <input id="profile-perspective" maxlength="2000" placeholder="Например: редактор Telegram-канала для начинающих специалистов">
+              </label>
+              <label for="profile-style">Стиль
+                <input id="profile-style" maxlength="2000" placeholder="Например: ясно, с научной точностью">
+              </label>
+              <label for="profile-format">Формат
+                <input id="profile-format" maxlength="2000" placeholder="Например: короткий список с примерами">
+              </label>
+              <label for="profile-constraints">Ограничения
+                <input id="profile-constraints" maxlength="2000" placeholder="Например: без англицизмов, до 5 пунктов">
+              </label>
+              <button id="save-profile" class="secondary-button compact-button" type="submit">Создать профиль</button>
+            </form>
+          </section>
+
           <section class="token-panel" aria-labelledby="token-title">
             <h2 id="token-title">Последний запрос к модели</h2>
             <p id="token-report" class="hint" aria-live="polite">Отправьте сообщение, чтобы увидеть точный расход токенов и состав памяти в контексте.</p>
@@ -50,7 +84,7 @@
               </div>
             </div>
             <div id="memory-layers" class="memory-layers" aria-live="polite"></div>
-            <button id="clear-long-term-memory" class="secondary-button compact-button" type="button">Очистить долговременную память</button>
+            <button id="clear-long-term-memory" class="secondary-button compact-button" type="button">Очистить глобальную долговременную память</button>
           </section>
 
           <dialog id="context-settings-dialog" aria-labelledby="context-title">
