@@ -30,6 +30,7 @@ const (
 	// can return the provider result instead of cancelling it prematurely.
 	agentTimeout       = 125 * time.Second
 	agentSessionCookie = "agent_session"
+	agentUserCookie    = "agent_user"
 )
 
 type completer interface {
@@ -339,24 +340,26 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusServiceUnavailable, "Агент сейчас недоступен.")
 		return
 	}
-	sessionID, err := agentSessionID(w, r)
+	userID, sessionID, err := agentIdentity(w, r)
 	if err != nil {
 		writeAgentError(w, http.StatusInternalServerError, "Не удалось создать сессию агента.")
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, h.agent.State(sessionID))
+		writeJSON(w, http.StatusOK, h.agent.StateForUser(userID, sessionID))
 		return
 	case http.MethodDelete:
-		if err := h.agent.Clear(sessionID); err != nil {
+		if err := h.agent.ClearForUser(userID, sessionID); err != nil {
 			writeAgentError(w, http.StatusInternalServerError, "Не удалось удалить историю диалога.")
 			return
 		}
-		writeJSON(w, http.StatusOK, h.agent.State(sessionID))
+		writeJSON(w, http.StatusOK, h.agent.StateForUser(userID, sessionID))
 		return
 	case http.MethodPatch:
-		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		// A profile has five independently limited text fields, so its command
+		// can legitimately be larger than the old small memory-command limit.
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 		defer r.Body.Close()
 		var command models.ContextCommand
 		decoder := json.NewDecoder(r.Body)
@@ -365,7 +368,7 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 			writeAgentError(w, http.StatusBadRequest, "Не удалось прочитать команду контекста.")
 			return
 		}
-		result, err := h.agent.ApplyContextCommand(sessionID, command)
+		result, err := h.agent.ApplyContextCommandForUser(userID, sessionID, command)
 		if err != nil {
 			writeAgentError(w, http.StatusBadRequest, err.Error())
 			return
@@ -393,7 +396,7 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
 	defer cancel()
-	result, err := h.agent.RespondWithOptions(ctx, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model)
+	result, err := h.agent.RespondWithUserOptions(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model)
 	if err != nil {
 		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) || strings.Contains(err.Error(), "N должен") || strings.Contains(err.Error(), "стратег") || strings.Contains(err.Error(), "модель") {
 			writeAgentError(w, http.StatusBadRequest, err.Error())
@@ -408,6 +411,21 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// agentIdentity separates a stable local user from an individual dialogue
+// session. When upgrading an existing browser, the first user ID is its old
+// session ID so previously persisted local data remains reachable.
+func agentIdentity(w http.ResponseWriter, r *http.Request) (string, string, error) {
+	sessionID, err := agentSessionID(w, r)
+	if err != nil {
+		return "", "", err
+	}
+	if cookie, err := r.Cookie(agentUserCookie); err == nil && len(cookie.Value) >= 20 {
+		return cookie.Value, sessionID, nil
+	}
+	http.SetCookie(w, &http.Cookie{Name: agentUserCookie, Value: sessionID, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 60 * 60 * 24 * 365})
+	return sessionID, sessionID, nil
 }
 
 // AgentModels exposes only model IDs that the agent supports. The API key
