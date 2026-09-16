@@ -66,6 +66,13 @@ h2 { margin: 0; font-size: 1.05rem; }
   border-radius: 10px;
   background: #fff;
 }
+.profile-panel { margin-top: 18px; padding: 16px; border: 1px solid #dfe7f2; border-radius: 10px; background: #f8faff; }
+.profile-picker { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-bottom: 12px; }
+.profile-picker label { display: grid; gap: 5px; min-width: min(100%, 270px); color: #314155; font-size: .88rem; }
+.profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
+.profile-form label { display: grid; gap: 5px; color: #314155; font-size: .88rem; }
+.profile-form input { width: 100%; box-sizing: border-box; }
+.profile-form button { justify-self: start; }
 .memory-layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .memory-layer { min-width: 0; padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
 .memory-layer h3 { margin: 0 0 5px; color: #395577; font-size: .92rem; }
@@ -184,4 +191,6 @@ summary { cursor: pointer; color: #395577; font-weight: 650; }
   .heading-actions { justify-content: space-between; }
   .agent-message { max-width: 94%; }
   .memory-layers { grid-template-columns: 1fr; }
+  .profile-form { grid-template-columns: 1fr; }
+  .profile-picker { align-items: stretch; }
 }
