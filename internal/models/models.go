@@ -62,6 +62,17 @@ type MemoryLayers struct {
 	LongTerm  []MemoryItem  `json:"longTerm"`
 }
 
+// UserProfile is a named expert perspective for a response. Profiles are
+// reusable by one user; a conversation only stores the selected profile ID.
+type UserProfile struct {
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Perspective string `json:"perspective,omitempty"`
+	Style       string `json:"style,omitempty"`
+	Format      string `json:"format,omitempty"`
+	Constraints string `json:"constraints,omitempty"`
+}
+
 type ConversationBranch struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -96,6 +107,8 @@ type ContextCommand struct {
 	Key          string          `json:"key,omitempty"`
 	Value        string          `json:"value,omitempty"`
 	Model        string          `json:"model,omitempty"`
+	Profile      UserProfile     `json:"profile,omitempty"`
+	ProfileID    string          `json:"profileId,omitempty"`
 }
 
 type AgentResponse struct {
@@ -106,6 +119,9 @@ type AgentResponse struct {
 	Strategy        ContextStrategy          `json:"strategy"`
 	Facts           []Fact                   `json:"facts,omitempty"`
 	Memory          MemoryLayers             `json:"memory"`
+	Profile         UserProfile              `json:"profile"`
+	Profiles        []UserProfile            `json:"profiles,omitempty"`
+	ActiveProfileID string                   `json:"activeProfileId,omitempty"`
 	ActiveBranchID  string                   `json:"activeBranchId,omitempty"`
 	Branches        []ConversationBranch     `json:"branches,omitempty"`
 	Checkpoints     []ConversationCheckpoint `json:"checkpoints,omitempty"`
