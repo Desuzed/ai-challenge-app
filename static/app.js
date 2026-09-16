@@ -16,7 +16,18 @@ const agentModel = document.querySelector('#agent-model');
 const modelDescription = document.querySelector('#model-description');
 const memoryLayers = document.querySelector('#memory-layers');
 const clearLongTermMemory = document.querySelector('#clear-long-term-memory');
+const profileForm = document.querySelector('#profile-form');
+const profileSelect = document.querySelector('#profile-select');
+const newProfile = document.querySelector('#new-profile');
+const deleteProfile = document.querySelector('#delete-profile');
+const profileName = document.querySelector('#profile-name');
+const profilePerspective = document.querySelector('#profile-perspective');
+const profileStyle = document.querySelector('#profile-style');
+const profileFormat = document.querySelector('#profile-format');
+const profileConstraints = document.querySelector('#profile-constraints');
+const saveProfile = document.querySelector('#save-profile');
 let selectedAgentModel = 'deepseek-flash';
+let activeProfileID = '';
 
 const strategyDescriptions = {
   sliding_window: 'В модель отправляются только последние N сообщений. Ранние реплики удаляются.',
@@ -62,7 +73,6 @@ function renderAgentHistory(messages) {
     memoryActions.className = 'message-memory-actions';
     [
       ['В рабочую', 'working', ''],
-      ['В профиль', 'long_term', 'profile'],
       ['В решения', 'long_term', 'decisions'],
       ['В знания', 'long_term', 'knowledge'],
     ].forEach(([label, layer, category]) => {
@@ -90,6 +100,34 @@ function renderContextState(payload) {
   }
   strategyDescription.textContent = strategyDescriptions[contextStrategy.value];
 	if (payload.memory) renderMemoryLayers(payload.memory);
+	if (payload.profiles) renderProfiles(payload);
+}
+
+function renderProfile(profile = {}) {
+  profileName.value = profile.name || '';
+  profilePerspective.value = profile.perspective || '';
+  profileStyle.value = profile.style || '';
+  profileFormat.value = profile.format || '';
+  profileConstraints.value = profile.constraints || '';
+}
+
+function renderProfiles(payload) {
+  activeProfileID = payload.activeProfileId || '';
+  profileSelect.replaceChildren();
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'Без профиля';
+  profileSelect.append(none);
+  (payload.profiles || []).forEach((profile) => {
+    const option = document.createElement('option');
+    option.value = profile.id;
+    option.textContent = profile.name;
+    profileSelect.append(option);
+  });
+  profileSelect.value = activeProfileID;
+  deleteProfile.disabled = !activeProfileID;
+  saveProfile.textContent = activeProfileID ? 'Сохранить изменения' : 'Создать профиль';
+  renderProfile(activeProfileID ? payload.profile : {});
 }
 
 function renderTokenReport(payload) {
@@ -98,6 +136,7 @@ function renderTokenReport(payload) {
   const total = tokens.requestTokens + tokens.responseTokens;
   const longTermSent = (payload.requestMessages || []).some((message) => message.role === 'system' && message.content.includes('Долговременная память'));
   const workingSent = (payload.requestMessages || []).some((message) => message.role === 'system' && message.content.includes('Рабочая память'));
+  const profileSent = (payload.requestMessages || []).some((message) => message.role === 'system' && message.content.includes('Активный профиль пользователя'));
   tokenReport.replaceChildren();
   const entries = [
     `Модель: ${modelLabel(payload.model || selectedAgentModel)}`,
@@ -106,6 +145,7 @@ function renderTokenReport(payload) {
     `Всего: ${total} токенов`,
     `Долгосрочная память: ${longTermSent ? 'передана в контекст' : 'не передавалась'}`,
     `Рабочая память: ${workingSent ? 'передана в контекст' : 'не передавалась'}`,
+    `Профиль: ${profileSent ? 'применён автоматически' : 'не задан'}`,
   ];
   entries.forEach((entry, index) => {
     const item = document.createElement('span');
@@ -114,6 +154,90 @@ function renderTokenReport(payload) {
     if (index < entries.length - 1) tokenReport.append(document.createTextNode(' · '));
   });
 }
+
+profileForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const action = activeProfileID ? 'update_profile' : 'create_profile';
+  const profile = {
+    id: activeProfileID,
+    name: profileName.value.trim(),
+    perspective: profilePerspective.value.trim(),
+    style: profileStyle.value.trim(),
+    format: profileFormat.value.trim(),
+    constraints: profileConstraints.value.trim(),
+  };
+  saveProfile.disabled = true;
+  try {
+    const response = await fetch('/api/agent/chat', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ action, profile }),
+    });
+    const payload = await readAgentResponse(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить профиль.');
+    renderContextState(payload);
+    requestLog.textContent = `БРАУЗЕР → BACKEND\nPATCH /api/agent/chat\n${prettyJSON({ action, profile })}\n\nАктивный профиль будет автоматически добавляться к каждому запросу этой сессии.`;
+    setStatus('Профиль сохранён. Следующий ответ будет написан через выбранную перспективу.');
+  } catch (error) {
+    setStatus(readableFetchError(error, 'Не удалось сохранить профиль.'), true);
+  } finally {
+    saveProfile.disabled = false;
+  }
+});
+
+newProfile.addEventListener('click', async () => {
+  newProfile.disabled = true;
+  try {
+    const response = await fetch('/api/agent/chat', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ action: 'set_active_profile', profileId: '' }),
+    });
+    const payload = await readAgentResponse(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось начать создание профиля.');
+    renderContextState(payload);
+    profileName.focus();
+  } catch (error) {
+    setStatus(readableFetchError(error, 'Не удалось начать создание профиля.'), true);
+  } finally {
+    newProfile.disabled = false;
+  }
+});
+
+profileSelect.addEventListener('change', async () => {
+  const profileId = profileSelect.value;
+  profileSelect.disabled = true;
+  try {
+    const response = await fetch('/api/agent/chat', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ action: 'set_active_profile', profileId }),
+    });
+    const payload = await readAgentResponse(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось выбрать профиль.');
+    renderContextState(payload);
+    setStatus(profileId ? 'Профиль выбран для этой сессии.' : 'Профиль отключён для этой сессии.');
+  } catch (error) {
+    setStatus(readableFetchError(error, 'Не удалось выбрать профиль.'), true);
+  } finally {
+    profileSelect.disabled = false;
+  }
+});
+
+deleteProfile.addEventListener('click', async () => {
+  if (!activeProfileID || !window.confirm('Удалить выбранный профиль? Он перестанет быть доступен во всех ваших сессиях.')) return;
+  try {
+    const response = await fetch('/api/agent/chat', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+      body: JSON.stringify({ action: 'delete_profile', profileId: activeProfileID }),
+    });
+    const payload = await readAgentResponse(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось удалить профиль.');
+    renderContextState(payload);
+    setStatus('Профиль удалён.');
+  } catch (error) {
+    setStatus(readableFetchError(error, 'Не удалось удалить профиль.'), true);
+  }
+});
 
 function modelLabel(model) {
   if (model === 'deepseek-flash') return 'DeepSeek Flash';
@@ -207,7 +331,7 @@ function renderMemoryLayers(memory) {
   memoryLayers.replaceChildren(
     memorySection('Краткосрочная', 'Последние реплики текущего диалога. Добавляется автоматически.', (memory.shortTerm || []).map((message, index) => ({ key: `${index + 1}. ${message.role}`, value: message.content, layer: 'short_term' })), 'Пока нет реплик.'),
     memorySection('Рабочая', 'Данные текущей задачи. Добавляется только этой формой.', memory.working, 'Нет явно сохранённых данных задачи.'),
-    memorySection('Долговременная', 'Профиль, решения и знания. Добавляется только этой формой.', memory.longTerm, 'Нет явно сохранённых данных.')
+    memorySection('Долговременная', 'Глобальные факты пользователя: решения и знания. Не зависит от профиля и сессии.', memory.longTerm, 'Нет глобальных фактов.')
   );
   clearLongTermMemory.disabled = !memory.longTerm || memory.longTerm.length === 0;
 }
@@ -230,7 +354,7 @@ async function deleteMemory(entry) {
 }
 
 clearLongTermMemory.addEventListener('click', async () => {
-  if (!window.confirm('Удалить все профиль, решения и знания из долговременной памяти?')) return;
+  if (!window.confirm('Удалить все глобальные решения и знания пользователя?')) return;
   clearLongTermMemory.disabled = true;
   try {
     const response = await fetch('/api/agent/chat', {
