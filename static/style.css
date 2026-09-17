@@ -58,7 +58,7 @@ h2 { margin: 0; font-size: 1.05rem; }
 }
 .token-panel #token-report { line-height: 1.65; }
 
-.memory-panel {
+.task-panel {
   display: grid;
   gap: 14px;
   padding: 15px;
@@ -66,22 +66,18 @@ h2 { margin: 0; font-size: 1.05rem; }
   border-radius: 10px;
   background: #fff;
 }
-.profile-panel { margin-top: 18px; padding: 16px; border: 1px solid #dfe7f2; border-radius: 10px; background: #f8faff; }
-.profile-picker { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin-bottom: 12px; }
-.profile-picker label { display: grid; gap: 5px; min-width: min(100%, 270px); color: #314155; font-size: .88rem; }
-.profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
-.profile-form label { display: grid; gap: 5px; color: #314155; font-size: .88rem; }
-.profile-form input { width: 100%; box-sizing: border-box; }
-.profile-form button { justify-self: start; }
-.memory-layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.memory-layer { min-width: 0; padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
-.memory-layer h3 { margin: 0 0 5px; color: #395577; font-size: .92rem; }
-.memory-layer ul { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
-.memory-layer li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: #314155; font-size: .83rem; overflow-wrap: anywhere; }
-.memory-remove { flex: 0 0 auto; padding: 3px 6px; border: 1px solid #91a9e8; background: #fff; color: #315edb; font-size: .75rem; }
-.message-memory-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-.message-memory-button { padding: 4px 7px; border: 1px solid #91a9e8; background: #fff; color: #315edb; font-size: .72rem; }
-.message-memory-button:hover { background: #edf3ff; }
+.task-state { display: grid; gap: 12px; min-height: 32px; }
+.task-phases { display: flex; flex-wrap: wrap; gap: 7px; }
+.task-meta { flex-basis: 100%; margin: 3px 0 0; color: #314155; font-size: .88rem; white-space: pre-wrap; }
+.task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-goal { margin: 0; color: #234cb9; font-weight: 750; }
+.plan-example { margin: 0; padding: 12px; overflow: auto; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; color: #314155; font: .82rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.plan-detail { padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
+.plan-detail h3 { margin: 0 0 7px; color: #395577; font-size: .92rem; }
+.plan-detail p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.plan-detail ul { display: grid; gap: 6px; margin: 0; padding-left: 18px; color: #314155; font-size: .88rem; }
+.artifact-title { margin: 0 0 8px !important; color: #234cb9; font-weight: 750; }
+.plan-detail .compact-button { margin-top: 10px; }
 
 .section-heading {
   display: flex;
@@ -119,7 +115,9 @@ h2 { margin: 0; font-size: 1.05rem; }
 .agent-message-assistant { justify-self: start; }
 
 .context-settings {
-  min-width: min(420px, calc(100vw - 40px));
+  width: min(720px, calc(100vw - 40px));
+  max-height: min(800px, calc(100vh - 40px));
+  overflow: auto;
   padding: 14px;
   border: 1px solid #d7e1ef;
   border-radius: 10px;
@@ -130,6 +128,23 @@ dialog { border: 0; border-radius: 12px; padding: 0; box-shadow: 0 18px 60px #18
 dialog::backdrop { background: #18212f66; }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dialog-close { justify-self: start; }
+.parameter-section { padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
+.parameter-section summary { color: #395577; font-weight: 700; }
+.parameter-section[open] summary { margin-bottom: 10px; }
+.profile-picker { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 12px 0; }
+.profile-picker label { display: grid; gap: 5px; min-width: min(100%, 270px); color: #314155; font-size: .88rem; }
+.profile-form { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; }
+.profile-form label { color: #314155; font-size: .88rem; }
+.profile-form button { justify-self: start; }
+.memory-layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.memory-layer { min-width: 0; padding: 10px; border: 1px solid #dfe7f2; border-radius: 8px; background: #fff; }
+.memory-layer h3 { margin: 0 0 5px; color: #395577; font-size: .92rem; }
+.memory-layer ul { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
+.memory-layer li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: #314155; font-size: .83rem; overflow-wrap: anywhere; }
+.memory-remove { flex: 0 0 auto; padding: 3px 6px; border: 1px solid #91a9e8; background: #fff; color: #315edb; font-size: .75rem; }
+.message-memory-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.message-memory-button { padding: 4px 7px; border: 1px solid #91a9e8; background: #fff; color: #315edb; font-size: .72rem; }
+.message-memory-button:hover { background: #edf3ff; }
 
 form { display: grid; gap: 12px; }
 label { display: grid; gap: 6px; font-size: .94rem; font-weight: 650; }
@@ -159,6 +174,8 @@ button:disabled { cursor: wait; opacity: .7; }
 .secondary-button { border: 1px solid #91a9e8; background: #fff; color: #315edb; }
 .secondary-button:hover { background: #edf3ff; }
 .compact-button { margin: 0; padding: 8px 12px; }
+.task-phases .task-chip { padding: 6px 9px; border: 1px solid #c9d5ed; border-radius: 999px; background: #f8faff; color: #526174; font-size: .82rem; }
+.task-phases .task-chip-current { border-color: #315edb; background: #edf3ff; color: #234cb9; font-weight: 700; }
 .icon-button { margin: 0; padding: 0; width: 32px; height: 32px; border: 0; background: transparent; color: #526174; font-size: 1.5rem; line-height: 1; }
 .icon-button:hover { background: #edf3ff; color: #315edb; }
 
@@ -190,7 +207,6 @@ summary { cursor: pointer; color: #395577; font-weight: 650; }
   .section-heading { display: grid; grid-template-columns: 1fr; }
   .heading-actions { justify-content: space-between; }
   .agent-message { max-width: 94%; }
-  .memory-layers { grid-template-columns: 1fr; }
   .profile-form { grid-template-columns: 1fr; }
-  .profile-picker { align-items: stretch; }
+  .memory-layers { grid-template-columns: 1fr; }
 }
