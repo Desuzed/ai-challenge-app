@@ -54,6 +54,15 @@ type MemoryItem struct {
 	Value    string      `json:"value"`
 }
 
+// Invariant is a mandatory rule that is kept outside the dialogue. Its scope
+// determines ownership: task rules live with one task, global rules live with
+// a user, and state rules constrain task transitions.
+type Invariant struct {
+	ID    string `json:"id"`
+	Scope string `json:"scope"`
+	Rule  string `json:"rule"`
+}
+
 // MemoryLayers is returned with every agent response, so it is always clear
 // which information is in which layer and will reach the model.
 type MemoryLayers struct {
@@ -111,6 +120,8 @@ type ContextCommand struct {
 	ProfileID    string          `json:"profileId,omitempty"`
 	Task         TaskState       `json:"task,omitempty"`
 	Phase        string          `json:"phase,omitempty"`
+	Invariant    Invariant       `json:"invariant,omitempty"`
+	PlannerMode  string          `json:"plannerMode,omitempty"`
 }
 
 // TaskStatus describes whether a task can currently progress. Pausing is
@@ -130,39 +141,46 @@ const (
 // hand-off to a later conversation turn concrete instead of requiring the
 // user to repeat prior context.
 type TaskState struct {
-	Goal            string     `json:"goal,omitempty"`
-	Phases          []string   `json:"phases"`
-	Phase           string     `json:"phase,omitempty"`
-	PhaseIndex      int        `json:"phaseIndex"`
-	CurrentStep     string     `json:"currentStep,omitempty"`
-	ExpectedAction  string     `json:"expectedAction,omitempty"`
-	Status          TaskStatus `json:"status"`
-	Specification   string     `json:"specification,omitempty"`
-	OpenQuestions   []string   `json:"openQuestions,omitempty"`
-	Decisions       []string   `json:"decisions,omitempty"`
-	NextSteps       []string   `json:"nextSteps,omitempty"`
-	ArtifactTitle   string     `json:"artifactTitle,omitempty"`
-	ArtifactContent string     `json:"artifactContent,omitempty"`
+	Goal            string      `json:"goal,omitempty"`
+	Phases          []string    `json:"phases"`
+	Phase           string      `json:"phase,omitempty"`
+	PhaseIndex      int         `json:"phaseIndex"`
+	CurrentStep     string      `json:"currentStep,omitempty"`
+	ExpectedAction  string      `json:"expectedAction,omitempty"`
+	Status          TaskStatus  `json:"status"`
+	Specification   string      `json:"specification,omitempty"`
+	OpenQuestions   []string    `json:"openQuestions,omitempty"`
+	Decisions       []string    `json:"decisions,omitempty"`
+	NextSteps       []string    `json:"nextSteps,omitempty"`
+	ArtifactTitle   string      `json:"artifactTitle,omitempty"`
+	ArtifactContent string      `json:"artifactContent,omitempty"`
+	TaskInvariants  []Invariant `json:"taskInvariants,omitempty"`
+	StateInvariants []Invariant `json:"stateInvariants,omitempty"`
+	// RequireApprovalForTransition makes an automatic phase change impossible
+	// until the current user message explicitly approves it.
+	RequireApprovalForTransition bool `json:"requireApprovalForTransition,omitempty"`
 }
 
 type AgentResponse struct {
-	Answer          string                   `json:"answer"`
-	Messages        []ChatMessage            `json:"messages"`
-	RequestMessages []ChatMessage            `json:"requestMessages,omitempty"`
-	Tokens          AgentTokenReport         `json:"tokens"`
-	Strategy        ContextStrategy          `json:"strategy"`
-	Facts           []Fact                   `json:"facts,omitempty"`
-	Memory          MemoryLayers             `json:"memory"`
-	Profile         UserProfile              `json:"profile"`
-	Profiles        []UserProfile            `json:"profiles,omitempty"`
-	ActiveProfileID string                   `json:"activeProfileId,omitempty"`
-	ActiveBranchID  string                   `json:"activeBranchId,omitempty"`
-	Branches        []ConversationBranch     `json:"branches,omitempty"`
-	Checkpoints     []ConversationCheckpoint `json:"checkpoints,omitempty"`
-	RecentMessages  int                      `json:"recentMessages"`
-	Model           string                   `json:"model"`
-	Task            TaskState                `json:"task"`
-	PendingMessage  string                   `json:"pendingMessage,omitempty"`
+	Answer           string                   `json:"answer"`
+	Messages         []ChatMessage            `json:"messages"`
+	RequestMessages  []ChatMessage            `json:"requestMessages,omitempty"`
+	Tokens           AgentTokenReport         `json:"tokens"`
+	Strategy         ContextStrategy          `json:"strategy"`
+	Facts            []Fact                   `json:"facts,omitempty"`
+	Memory           MemoryLayers             `json:"memory"`
+	Profile          UserProfile              `json:"profile"`
+	Profiles         []UserProfile            `json:"profiles,omitempty"`
+	ActiveProfileID  string                   `json:"activeProfileId,omitempty"`
+	ActiveBranchID   string                   `json:"activeBranchId,omitempty"`
+	Branches         []ConversationBranch     `json:"branches,omitempty"`
+	Checkpoints      []ConversationCheckpoint `json:"checkpoints,omitempty"`
+	RecentMessages   int                      `json:"recentMessages"`
+	Model            string                   `json:"model"`
+	Task             TaskState                `json:"task"`
+	PendingMessage   string                   `json:"pendingMessage,omitempty"`
+	GlobalInvariants []Invariant              `json:"globalInvariants,omitempty"`
+	PlannerMode      string                   `json:"plannerMode"`
 }
 
 // AgentModelsResponse is the safe, key-free catalogue used by the chat UI.
