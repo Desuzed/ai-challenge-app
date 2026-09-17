@@ -46,6 +46,8 @@ type ConversationState struct {
 	Model           string                 `json:"model,omitempty"`
 	UserID          string                 `json:"userId,omitempty"`
 	ActiveProfileID string                 `json:"activeProfileId,omitempty"`
+	Task            models.TaskState       `json:"task"`
+	PendingMessage  string                 `json:"pendingMessage,omitempty"`
 	// Profile and LongTermMemory are retained only to migrate the previous
 	// single-profile, per-session format when it is read.
 	Profile models.UserProfile `json:"profile,omitempty"`
@@ -191,6 +193,10 @@ func copySessions(sessions map[string]ConversationState) map[string]Conversation
 		state.Facts = copyFactsMap(state.Facts)
 		state.WorkingMemory = copyFactsMap(state.WorkingMemory)
 		state.LongTermMemory = copyLongTermMemory(state.LongTermMemory)
+		state.Task.Phases = append([]string(nil), state.Task.Phases...)
+		state.Task.OpenQuestions = append([]string(nil), state.Task.OpenQuestions...)
+		state.Task.Decisions = append([]string(nil), state.Task.Decisions...)
+		state.Task.NextSteps = append([]string(nil), state.Task.NextSteps...)
 		state.Usages = append([]models.ModelUsage(nil), state.Usages...)
 		for i := range state.Branches {
 			state.Branches[i].Messages = copyMessages(state.Branches[i].Messages)
