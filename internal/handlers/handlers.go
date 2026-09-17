@@ -368,10 +368,27 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 			writeAgentError(w, http.StatusBadRequest, "Не удалось прочитать команду контекста.")
 			return
 		}
+		if command.Action == "pause_task" {
+			if result, interrupted := h.agent.PauseInFlight(userID, sessionID); interrupted {
+				writeJSON(w, http.StatusOK, result)
+				return
+			}
+		}
 		result, err := h.agent.ApplyContextCommandForUser(userID, sessionID, command)
 		if err != nil {
 			writeAgentError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if command.Action == "switch_task_phase" {
+			ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
+			defer cancel()
+			transition := fmt.Sprintf("[[phase-transition]] Пользователь переключил дашборд на этап «%s». Сразу актуализируй рабочее ТЗ, текущий шаг, ожидаемое действие и следующие шаги строго для этого этапа. Если это последний этап и открытых вопросов нет, сформируй итоговый артефакт.", result.Task.Phase)
+			result, err = h.agent.RespondWithUserOptions(ctx, userID, sessionID, transition, result.RecentMessages, result.Strategy, result.Model)
+			if err != nil {
+				status, message := errorResponse(err)
+				writeAgentError(w, status, message)
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, result)
 		return
