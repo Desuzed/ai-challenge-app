@@ -230,6 +230,97 @@ func TestProjectDashboardLetsUserReturnToAnyNamedStage(t *testing.T) {
 	}
 }
 
+func TestInvariantsAreSeparateFromDialogueAndIncludedAsMandatoryRules(t *testing.T) {
+	client := &fakeCompleter{answer: "Отказываюсь от MySQL: это нарушает инвариант. Могу предложить PostgreSQL."}
+	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Сделать API", Phases: []string{"planning", "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_invariant", Invariant: models.Invariant{Scope: "task", Rule: "Использовать только PostgreSQL."}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Respond(context.Background(), "session", "Давай вместо этого используем MySQL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Answer, "нарушает инвариант") || len(result.Task.TaskInvariants) != 1 {
+		t.Fatalf("conflict result = %#v", result)
+	}
+	if len(client.requests) != 1 || !strings.Contains(client.requests[0][1].Content, "ОБЯЗАТЕЛЬНЫЕ ИНВАРИАНТЫ") || !strings.Contains(client.requests[0][1].Content, "PostgreSQL") || !strings.Contains(client.requests[0][1].Content, "откажись") {
+		t.Fatalf("invariants were not supplied as mandatory context: %#v", client.requests)
+	}
+	for _, message := range result.Messages {
+		if strings.Contains(message.Content, "ОБЯЗАТЕЛЬНЫЕ ИНВАРИАНТЫ") {
+			t.Fatalf("invariant leaked into dialogue: %#v", result.Messages)
+		}
+	}
+}
+
+func TestStateInvariantBlocksAutomaticTransitionUntilApproval(t *testing.T) {
+	_, task := applyPlannerCompletion(models.TaskState{
+		Goal: "MVP", Phases: []string{"planning", "execution"}, Phase: "planning", ExpectedAction: "Подтвердить план",
+		RequireApprovalForTransition: true,
+	}, `{"answer":"Перехожу.","plan":{"phase":"execution"}}`, "Продолжай без подтверждения")
+	if task.Phase != "planning" {
+		t.Fatalf("transition without approval = %#v", task)
+	}
+	_, task = applyPlannerCompletion(task, `{"answer":"Перехожу.","plan":{"phase":"execution"}}`, "Подтверждаю план")
+	if task.Phase != "execution" {
+		t.Fatalf("transition with approval = %#v", task)
+	}
+}
+
+func TestPlannerCanBeDisabledWithoutDiscardingTaskState(t *testing.T) {
+	client := &fakeCompleter{answer: "Обычный ответ, не JSON"}
+	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "MVP", Phases: []string{"planning", "done"}, CurrentStep: "Собрать требования"}}); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "disabled"})
+	if err != nil || disabled.PlannerMode != "disabled" || disabled.Task.CurrentStep != "Собрать требования" {
+		t.Fatalf("disabled task = %#v, err=%v", disabled.Task, err)
+	}
+	result, err := agent.Respond(context.Background(), "session", "Расскажи про Android-разработку")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != "Обычный ответ, не JSON" || result.PlannerMode != "disabled" {
+		t.Fatalf("response = %#v", result)
+	}
+	for _, message := range client.requests[0] {
+		if strings.Contains(message.Content, "агент-проектировщик") {
+			t.Fatalf("planner prompt must be absent: %#v", client.requests[0])
+		}
+	}
+}
+
+func TestPlannerModeCanBeChangedBeforeAnyTaskExists(t *testing.T) {
+	agent := New(&fakeCompleter{})
+	state, err := agent.ApplyContextCommand("empty-session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "disabled"})
+	if err != nil || state.PlannerMode != "disabled" || state.Task.Goal != "" {
+		t.Fatalf("empty-chat planner mode = %#v, err=%v", state, err)
+	}
+}
+
+func TestGlobalInvariantSurvivesNewSession(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "invariants.json"))
+	first, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyContextCommandForUser("user", "one", models.ContextCommand{Action: "save_invariant", Invariant: models.Invariant{Scope: "global", Rule: "Не транслитерировать английские термины."}}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := second.StateForUser("user", "two")
+	if len(state.GlobalInvariants) != 1 || !strings.Contains(state.GlobalInvariants[0].Rule, "транслитерировать") {
+		t.Fatalf("global invariants = %#v", state.GlobalInvariants)
+	}
+}
+
 func TestPauseInFlightInterruptsPlannerBeforeProviderWork(t *testing.T) {
 	client := &fakeCompleter{answer: "Не должен быть получен"}
 	agent := New(client)
