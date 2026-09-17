@@ -32,6 +32,11 @@ const taskState = document.querySelector('#task-state');
 const pauseTask = document.querySelector('#pause-task');
 const resumeTask = document.querySelector('#resume-task');
 const resetTask = document.querySelector('#reset-task');
+const togglePlanner = document.querySelector('#toggle-planner');
+const invariantForm = document.querySelector('#invariant-form');
+const invariantScope = document.querySelector('#invariant-scope');
+const invariantRule = document.querySelector('#invariant-rule');
+const invariantLayers = document.querySelector('#invariant-layers');
 
 let selectedAgentModel = 'deepseek-flash';
 let activeTask = {};
@@ -187,6 +192,30 @@ function renderTask(task = {}, tokens = {}) {
   pauseTask.disabled = !configured || task.status !== 'active';
   resumeTask.disabled = !configured || task.status !== 'paused';
   resetTask.disabled = !configured;
+  togglePlanner.disabled = false;
+  togglePlanner.textContent = window.currentPlannerMode === 'disabled' ? 'Включить планировщик' : 'Отключить планировщик';
+}
+
+function renderInvariants(payload) {
+  invariantLayers.replaceChildren();
+  const groups = [
+    ['Текущая задача', payload.task?.taskInvariants || []],
+    ['Переходы состояния', payload.task?.stateInvariants || []],
+    ['Глобальные', payload.globalInvariants || []],
+  ];
+  groups.forEach(([title, items]) => {
+    const heading = document.createElement('p'); heading.className = 'hint'; heading.textContent = `${title}: ${items.length || 'нет'}`; invariantLayers.append(heading);
+    items.forEach((item) => {
+      const row = document.createElement('div'); row.className = 'invariant-item';
+      const text = document.createElement('span'); const scope = document.createElement('strong'); scope.textContent = `${title}.`; text.append(scope, document.createTextNode(` ${item.rule}`));
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'memory-remove'; remove.textContent = 'Удалить';
+      remove.addEventListener('click', async () => {
+        try { await patchAgent({ action: 'delete_invariant', invariant: { id: item.id, scope: item.scope } }, 'Не удалось удалить инвариант.'); setStatus('Инвариант удалён.'); }
+        catch (error) { setStatus(readableFetchError(error, 'Не удалось удалить инвариант.'), true); }
+      });
+      row.append(text, remove); invariantLayers.append(row);
+    });
+  });
 }
 
 function renderContextState(payload) {
@@ -197,7 +226,9 @@ function renderContextState(payload) {
     agentModel.value = selectedAgentModel;
   }
   strategyDescription.textContent = strategyDescriptions[contextStrategy.value];
+  window.currentPlannerMode = payload.plannerMode || 'enabled';
   renderTask(payload.task, payload.tokens);
+  renderInvariants(payload);
   if (payload.memory) renderMemoryLayers(payload.memory);
   renderProfiles(payload);
 }
@@ -368,6 +399,17 @@ clearLongTermMemory.addEventListener('click', async () => {
   } catch (error) { setStatus(readableFetchError(error, 'Не удалось очистить долговременную память.'), true); }
 });
 
+invariantForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const rule = invariantRule.value.trim();
+  if (!rule) { setStatus('Введите текст инварианта.', true); invariantRule.focus(); return; }
+  try {
+    await patchAgent({ action: 'save_invariant', invariant: { scope: invariantScope.value, rule } }, 'Не удалось сохранить инвариант.');
+    invariantRule.value = '';
+    setStatus('Инвариант зафиксирован и будет проверяться в каждом следующем ответе.');
+  } catch (error) { setStatus(readableFetchError(error, 'Не удалось сохранить инвариант.'), true); }
+});
+
 async function saveMessageToMemory(value, layer, category) {
   try {
     await patchAgent({ action: 'save_message', layer, category, value }, 'Не удалось сохранить реплику в памяти.');
@@ -397,6 +439,14 @@ resetTask.addEventListener('click', async () => {
   if (!window.confirm('Сбросить состояние задачи? История диалога останется.')) return;
   try { await patchAgent({ action: 'reset_task' }, 'Не удалось сбросить задачу.'); setStatus('Состояние задачи сброшено.'); }
   catch (error) { setStatus(readableFetchError(error, 'Не удалось сбросить задачу.'), true); }
+});
+
+togglePlanner.addEventListener('click', async () => {
+  const disabled = window.currentPlannerMode === 'disabled';
+  try {
+    await patchAgent({ action: 'set_planner_mode', plannerMode: disabled ? 'enabled' : 'disabled' }, 'Не удалось изменить режим планировщика.');
+    setStatus(disabled ? 'Планировщик включён: следующие ответы снова будут обновлять ТЗ и этапы.' : 'Планировщик отключён: агент отвечает как обычный чат, план сохранён.');
+  } catch (error) { setStatus(readableFetchError(error, 'Не удалось изменить режим планировщика.'), true); }
 });
 
 async function loadAgentModels() {
