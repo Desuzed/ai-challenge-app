@@ -66,6 +66,10 @@ h2 { margin: 0; font-size: 1.05rem; }
   border-radius: 10px;
   background: #fff;
 }
+.task-panel summary { list-style: none; cursor: pointer; }
+.task-panel summary::-webkit-details-marker { display: none; }
+.task-panel[open] summary { margin-bottom: 0; }
+.collapse-label { flex: 0 0 auto; color: #315edb; font-size: .8rem; font-weight: 650; }
 .task-state { display: grid; gap: 12px; min-height: 32px; }
 .task-phases { display: flex; flex-wrap: wrap; gap: 7px; }
 .task-meta { flex-basis: 100%; margin: 3px 0 0; color: #314155; font-size: .88rem; white-space: pre-wrap; }
@@ -137,6 +141,10 @@ dialog::backdrop { background: #18212f66; }
 .profile-form label { color: #314155; font-size: .88rem; }
 .profile-form button { justify-self: start; }
 .memory-layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.invariant-form { margin: 12px 0; }
+.invariant-layers { display: grid; gap: 8px; }
+.invariant-item { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 9px; border: 1px solid #dfe7f2; border-radius: 8px; background: #fff; color: #314155; font-size: .86rem; }
+.invariant-item strong { color: #395577; }
 .memory-layer { min-width: 0; padding: 10px; border: 1px solid #dfe7f2; border-radius: 8px; background: #fff; }
 .memory-layer h3 { margin: 0 0 5px; color: #395577; font-size: .92rem; }
 .memory-layer ul { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
