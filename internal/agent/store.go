@@ -24,9 +24,10 @@ type PersistentState struct {
 }
 
 type UserState struct {
-	Profiles       map[string]models.UserProfile `json:"profiles,omitempty"`
-	LongTermMemory map[string]map[string]string  `json:"longTermMemory,omitempty"`
-	NextProfile    int                           `json:"nextProfile,omitempty"`
+	Profiles         map[string]models.UserProfile `json:"profiles,omitempty"`
+	LongTermMemory   map[string]map[string]string  `json:"longTermMemory,omitempty"`
+	NextProfile      int                           `json:"nextProfile,omitempty"`
+	GlobalInvariants []models.Invariant            `json:"globalInvariants,omitempty"`
 }
 
 // ConversationState is stored per browser session. Facts, checkpoints and
@@ -46,6 +47,9 @@ type ConversationState struct {
 	Model           string                 `json:"model,omitempty"`
 	UserID          string                 `json:"userId,omitempty"`
 	ActiveProfileID string                 `json:"activeProfileId,omitempty"`
+	Task            models.TaskState       `json:"task"`
+	PendingMessage  string                 `json:"pendingMessage,omitempty"`
+	PlannerMode     string                 `json:"plannerMode,omitempty"`
 	// Profile and LongTermMemory are retained only to migrate the previous
 	// single-profile, per-session format when it is read.
 	Profile models.UserProfile `json:"profile,omitempty"`
@@ -178,6 +182,7 @@ func copyPersistentState(state PersistentState) PersistentState {
 		}
 		user.Profiles = profiles
 		user.LongTermMemory = copyLongTermMemory(user.LongTermMemory)
+		user.GlobalInvariants = copyInvariants(user.GlobalInvariants)
 		users[id] = user
 	}
 	state.Users = users
@@ -191,6 +196,12 @@ func copySessions(sessions map[string]ConversationState) map[string]Conversation
 		state.Facts = copyFactsMap(state.Facts)
 		state.WorkingMemory = copyFactsMap(state.WorkingMemory)
 		state.LongTermMemory = copyLongTermMemory(state.LongTermMemory)
+		state.Task.Phases = append([]string(nil), state.Task.Phases...)
+		state.Task.OpenQuestions = append([]string(nil), state.Task.OpenQuestions...)
+		state.Task.Decisions = append([]string(nil), state.Task.Decisions...)
+		state.Task.NextSteps = append([]string(nil), state.Task.NextSteps...)
+		state.Task.TaskInvariants = copyInvariants(state.Task.TaskInvariants)
+		state.Task.StateInvariants = copyInvariants(state.Task.StateInvariants)
 		state.Usages = append([]models.ModelUsage(nil), state.Usages...)
 		for i := range state.Branches {
 			state.Branches[i].Messages = copyMessages(state.Branches[i].Messages)

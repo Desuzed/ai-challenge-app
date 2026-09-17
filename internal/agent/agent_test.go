@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-challenge-app/internal/models"
 )
@@ -70,6 +71,323 @@ func TestClearRemovesPersistentSession(t *testing.T) {
 	}
 	if got := second.History("session-a"); len(got) != 0 {
 		t.Fatalf("history after clear = %#v, want empty", got)
+	}
+}
+
+func TestTaskStateMachinePausesAndResumesFromSavedStep(t *testing.T) {
+	client := &fakeCompleter{answer: "Продолжаю работу"}
+	agent := New(client)
+	configured, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{
+		Goal:           "Подготовить запуск",
+		Phases:         []string{"planning", "execution", "validation", "done"},
+		CurrentStep:    "Собрать требования",
+		ExpectedAction: "Согласовать приоритеты",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.Task.Phase != "planning" || configured.Task.Status != models.TaskActive || configured.Task.PhaseIndex != 0 {
+		t.Fatalf("configured task = %#v", configured.Task)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "pause_task"}); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := agent.Respond(context.Background(), "session", "Что делать дальше?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 0 || !strings.Contains(paused.Answer, "не было отправлено модели") {
+		t.Fatalf("paused response = %#v, calls=%d", paused, len(client.requests))
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "resume_task"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Respond(context.Background(), "session", "Продолжаем"); err != nil {
+		t.Fatal(err)
+	}
+	resumedContext := client.requests[0][1].Content
+	if !strings.Contains(resumedContext, "Статус: active") || !strings.Contains(resumedContext, "Не повторяй прежнее объяснение") {
+		t.Fatalf("resumed task context = %q", resumedContext)
+	}
+}
+
+func TestPausedTaskDoesNotCallModelUntilResumed(t *testing.T) {
+	client := &fakeCompleter{answer: "Модельный ответ"}
+	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Собрать MVP", Phases: []string{"planning", "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "pause_task"}); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := agent.Respond(context.Background(), "session", "Измени состав экранов")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 0 || !strings.Contains(paused.Answer, "не было отправлено модели") || len(paused.Messages) != 2 {
+		t.Fatalf("paused response = %#v, calls=%d", paused, len(client.requests))
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "resume_task"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Respond(context.Background(), "session", "Измени состав экранов"); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("calls after resume = %d, want 1", len(client.requests))
+	}
+}
+
+func TestProjectPlannerBuildsDashboardFromChatMessage(t *testing.T) {
+	client := &fakeCompleter{answer: `{"answer":"Черновик ТЗ готов.","plan":{"specification":"MVP: клиентское приложение с каталогом, корзиной и оформлением заказа.","currentStep":"Согласовать состав экранов","expectedAction":"Подтвердить границы MVP","openQuestions":["Нужен ли поиск?"],"decisions":["Делаем только текстовое ТЗ"],"nextSteps":["Описать пользовательские сценарии"]}}`}
+	agent := New(client)
+	result, err := agent.Respond(context.Background(), "session", "Разработка MVP приложения\n\n- Цель: «Сделать MVP приложения доставки еды».\n- Этапы: `planning → execution → validation → done`.\n- Шаг: «Собрать список ключевых экранов».")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != "Черновик ТЗ готов." || result.Task.Goal != "Сделать MVP приложения доставки еды" || result.Task.Phase != "planning" || result.Task.CurrentStep != "Согласовать состав экранов" || result.Task.Specification == "" || len(result.Task.OpenQuestions) != 1 || len(result.Task.Decisions) != 1 {
+		t.Fatalf("planner result = %#v", result)
+	}
+	if len(client.requests) != 1 || !strings.Contains(client.requests[0][2].Content, "агент-проектировщик") {
+		t.Fatalf("planner request = %#v", client.requests)
+	}
+}
+
+func TestProjectPlannerSalvagesAnswerAndSpecificationFromTruncatedJSON(t *testing.T) {
+	answer, plan := applyPlannerCompletion(models.TaskState{Goal: "MVP", CurrentStep: "Исходный шаг"}, `{"answer":"Черновик готов.","plan":{"specification":"Подробное ТЗ для MVP.","currentStep":"Согласовать экраны","expectedAction":"Подтвердить список","openQuestions":["Нужен поиск?"`)
+	if answer != "Черновик готов." || plan.Specification != "Подробное ТЗ для MVP." || plan.CurrentStep != "Согласовать экраны" || plan.ExpectedAction != "Подтвердить список" {
+		t.Fatalf("salvaged plan = %#v, answer=%q", plan, answer)
+	}
+}
+
+func TestProjectPlannerStoresFinalArtifactSeparatelyFromWorkingSpecification(t *testing.T) {
+	answer, plan := applyPlannerCompletion(models.TaskState{
+		Goal:          "MVP доставки",
+		Phases:        []string{"planning", "done"},
+		PhaseIndex:    1,
+		Phase:         "done",
+		Status:        models.TaskActive,
+		Specification: "Рабочий черновик: согласовать список экранов.",
+	}, `{"answer":"Итоговое ТЗ сформировано.","plan":{"artifactTitle":"ТЗ MVP доставки еды","artifactContent":"# ТЗ MVP\n\n## Цель\nСобрать приложение доставки еды.\n\n## Критерии приёмки\nПользователь оформляет заказ."}}`)
+	if answer != "Итоговое ТЗ сформировано." || plan.ArtifactTitle != "ТЗ MVP доставки еды" || !strings.Contains(plan.ArtifactContent, "Критерии приёмки") {
+		t.Fatalf("artifact = %#v, answer=%q", plan, answer)
+	}
+	if plan.Specification != "Рабочий черновик: согласовать список экранов." {
+		t.Fatalf("working specification was overwritten: %q", plan.Specification)
+	}
+	if plan.Status != models.TaskDone || plan.CurrentStep != "Итоговое ТЗ сформировано" {
+		t.Fatalf("final artifact did not complete task: %#v", plan)
+	}
+}
+
+func TestProjectPlannerRecognizesSingleLineStarterMessage(t *testing.T) {
+	task, ok := taskFromMessage("Разработка MVP приложения - Цель: «Сделать MVP приложения доставки еды». - Этапы: planning → execution → validation → done. - Шаг: «Собрать список ключевых экранов».")
+	if !ok || task.Goal != "Сделать MVP приложения доставки еды" || !reflect.DeepEqual(task.Phases, []string{"planning", "execution", "validation", "done"}) || task.CurrentStep != "Собрать список ключевых экранов" {
+		t.Fatalf("parsed task = %#v, ok=%v", task, ok)
+	}
+}
+
+func TestPlanApprovalRefreshesDashboardQuestionsAndNextSteps(t *testing.T) {
+	updated := updatePlannerProgress(models.TaskState{
+		Goal:           "MVP",
+		Phases:         []string{"planning", "execution", "validation", "done"},
+		Phase:          "planning",
+		PhaseIndex:     0,
+		ExpectedAction: "Согласовать состав MVP",
+		OpenQuestions:  []string{"Нужен поиск?", "Нужны акции?"},
+	}, "Подтверждаю план, всё согласовано.")
+	if updated.Phase != "execution" || updated.PhaseIndex != 1 || len(updated.OpenQuestions) != 0 || len(updated.Decisions) != 1 || !strings.Contains(updated.CurrentStep, "execution") || !strings.Contains(updated.ExpectedAction, "execution") || len(updated.NextSteps) != 2 {
+		t.Fatalf("updated dashboard = %#v", updated)
+	}
+}
+
+func TestProjectPlannerCanAdvanceOnlyOnePhasePerModelResponse(t *testing.T) {
+	_, plan := applyPlannerCompletion(models.TaskState{Goal: "MVP", Phases: []string{"planning", "execution", "validation", "done"}, Phase: "planning"}, `{"answer":"Готово.","plan":{"phase":"validation"}}`)
+	if plan.Phase != "planning" || plan.PhaseIndex != 0 {
+		t.Fatalf("planner skipped a phase: %#v", plan)
+	}
+	_, plan = applyPlannerCompletion(plan, `{"answer":"Готово.","plan":{"phase":"execution"}}`)
+	if plan.Phase != "execution" || plan.PhaseIndex != 1 {
+		t.Fatalf("planner did not advance one phase: %#v", plan)
+	}
+	_, plan = applyPlannerCompletion(plan, `{"answer":"Возвращаю.","plan":{"phase":"planning"}}`, "Вернись в planning, нужно доработать требования.")
+	if plan.Phase != "planning" || plan.PhaseIndex != 0 {
+		t.Fatalf("planner did not return on user request: %#v", plan)
+	}
+}
+
+func TestProjectDashboardLetsUserReturnToAnyNamedStage(t *testing.T) {
+	agent := New(&fakeCompleter{})
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Текстовое ТЗ", Phases: []string{"planning", "execution", "validation", "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "switch_task_phase", Phase: "execution"}); err != nil {
+		t.Fatal(err)
+	}
+	returned, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "switch_task_phase", Phase: "planning"})
+	if err != nil || returned.Task.Phase != "planning" || returned.Task.PhaseIndex != 0 || returned.Task.Status != models.TaskActive || !strings.Contains(returned.Task.CurrentStep, "planning") || !strings.Contains(returned.Task.ExpectedAction, "planning") {
+		t.Fatalf("returned stage = %#v, err=%v", returned.Task, err)
+	}
+}
+
+func TestInvariantsAreSeparateFromDialogueAndIncludedAsMandatoryRules(t *testing.T) {
+	client := &fakeCompleter{answer: "Отказываюсь от MySQL: это нарушает инвариант. Могу предложить PostgreSQL."}
+	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Сделать API", Phases: []string{"planning", "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "save_invariant", Invariant: models.Invariant{Scope: "task", Rule: "Использовать только PostgreSQL."}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Respond(context.Background(), "session", "Давай вместо этого используем MySQL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Answer, "нарушает инвариант") || len(result.Task.TaskInvariants) != 1 {
+		t.Fatalf("conflict result = %#v", result)
+	}
+	if len(client.requests) != 1 || !strings.Contains(client.requests[0][1].Content, "ОБЯЗАТЕЛЬНЫЕ ИНВАРИАНТЫ") || !strings.Contains(client.requests[0][1].Content, "PostgreSQL") || !strings.Contains(client.requests[0][1].Content, "откажись") {
+		t.Fatalf("invariants were not supplied as mandatory context: %#v", client.requests)
+	}
+	for _, message := range result.Messages {
+		if strings.Contains(message.Content, "ОБЯЗАТЕЛЬНЫЕ ИНВАРИАНТЫ") {
+			t.Fatalf("invariant leaked into dialogue: %#v", result.Messages)
+		}
+	}
+}
+
+func TestStateInvariantBlocksAutomaticTransitionUntilApproval(t *testing.T) {
+	_, task := applyPlannerCompletion(models.TaskState{
+		Goal: "MVP", Phases: []string{"planning", "execution"}, Phase: "planning", ExpectedAction: "Подтвердить план",
+		RequireApprovalForTransition: true,
+	}, `{"answer":"Перехожу.","plan":{"phase":"execution"}}`, "Продолжай без подтверждения")
+	if task.Phase != "planning" {
+		t.Fatalf("transition without approval = %#v", task)
+	}
+	_, task = applyPlannerCompletion(task, `{"answer":"Перехожу.","plan":{"phase":"execution"}}`, "Подтверждаю план")
+	if task.Phase != "execution" {
+		t.Fatalf("transition with approval = %#v", task)
+	}
+}
+
+func TestPlannerCanBeDisabledWithoutDiscardingTaskState(t *testing.T) {
+	client := &fakeCompleter{answer: "Обычный ответ, не JSON"}
+	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "MVP", Phases: []string{"planning", "done"}, CurrentStep: "Собрать требования"}}); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "disabled"})
+	if err != nil || disabled.PlannerMode != "disabled" || disabled.Task.CurrentStep != "Собрать требования" {
+		t.Fatalf("disabled task = %#v, err=%v", disabled.Task, err)
+	}
+	result, err := agent.Respond(context.Background(), "session", "Расскажи про Android-разработку")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != "Обычный ответ, не JSON" || result.PlannerMode != "disabled" {
+		t.Fatalf("response = %#v", result)
+	}
+	for _, message := range client.requests[0] {
+		if strings.Contains(message.Content, "агент-проектировщик") {
+			t.Fatalf("planner prompt must be absent: %#v", client.requests[0])
+		}
+	}
+}
+
+func TestPlannerModeCanBeChangedBeforeAnyTaskExists(t *testing.T) {
+	agent := New(&fakeCompleter{})
+	state, err := agent.ApplyContextCommand("empty-session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "disabled"})
+	if err != nil || state.PlannerMode != "disabled" || state.Task.Goal != "" {
+		t.Fatalf("empty-chat planner mode = %#v, err=%v", state, err)
+	}
+}
+
+func TestGlobalInvariantSurvivesNewSession(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "invariants.json"))
+	first, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyContextCommandForUser("user", "one", models.ContextCommand{Action: "save_invariant", Invariant: models.Invariant{Scope: "global", Rule: "Не транслитерировать английские термины."}}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := second.StateForUser("user", "two")
+	if len(state.GlobalInvariants) != 1 || !strings.Contains(state.GlobalInvariants[0].Rule, "транслитерировать") {
+		t.Fatalf("global invariants = %#v", state.GlobalInvariants)
+	}
+}
+
+func TestPauseInFlightInterruptsPlannerBeforeProviderWork(t *testing.T) {
+	client := &fakeCompleter{answer: "Не должен быть получен"}
+	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "ТЗ", Phases: []string{"planning", "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan models.AgentResponse, 1)
+	failure := make(chan error, 1)
+	go func() {
+		response, err := agent.Respond(context.Background(), "session", "Подготовь черновик ТЗ")
+		if err != nil {
+			failure <- err
+			return
+		}
+		result <- response
+	}()
+
+	var interrupted bool
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if response, ok := agent.PauseInFlight("session", "session"); ok {
+			interrupted = response.Task.Status == models.TaskPaused
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !interrupted {
+		t.Fatal("pause did not interrupt active planner work")
+	}
+	select {
+	case err := <-failure:
+		t.Fatal(err)
+	case response := <-result:
+		if response.Task.Status != models.TaskPaused || response.PendingMessage != "Подготовь черновик ТЗ" || !strings.Contains(response.Answer, "приостановлена") || len(client.requests) != 0 {
+			t.Fatalf("pause response = %#v, calls=%d", response, len(client.requests))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("planner did not finish after pause")
+	}
+}
+
+func TestTaskStateMachineOnlyMovesToAdjacentPhasesAndPersists(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "agent-history.json"))
+	first, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Проверить задачу", Phases: []string{"draft", "review", "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"})
+	if err != nil || advanced.Task.Phase != "review" || advanced.Task.PhaseIndex != 1 || advanced.Task.Status != models.TaskActive {
+		t.Fatalf("advanced state = %#v, err=%v", advanced.Task, err)
+	}
+	completed, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"})
+	if err != nil || completed.Task.Phase != "done" || completed.Task.Status != models.TaskDone {
+		t.Fatalf("completed state = %#v, err=%v", completed.Task, err)
+	}
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"}); err == nil {
+		t.Fatal("advance after final phase unexpectedly succeeded")
+	}
+	second, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored := second.State("session").Task; restored.Phase != "done" || restored.Status != models.TaskDone || !reflect.DeepEqual(restored.Phases, []string{"draft", "review", "done"}) {
+		t.Fatalf("restored task = %#v", restored)
 	}
 }
 

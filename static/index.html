@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
     <title>AI Challenge — чат</title>
-    <link rel="stylesheet" href="style.css?v=week-reset-1">
+    <link rel="stylesheet" href="style.css?v=task-state-1">
   </head>
   <body>
     <main class="container">
@@ -18,7 +18,7 @@
             <h2 id="chat-title">Диалог</h2>
             <div class="heading-actions">
               <span id="chat-status" class="hint">История сохраняется для этого браузера</span>
-              <button id="open-context-settings" class="secondary-button compact-button" type="button" aria-haspopup="dialog">Фильтр</button>
+              <button id="open-context-settings" class="secondary-button compact-button" type="button" aria-haspopup="dialog">Параметры</button>
             </div>
           </div>
 
@@ -28,7 +28,7 @@
 
           <form id="agent-form">
             <label for="agent-message">Сообщение</label>
-            <textarea id="agent-message" name="message" rows="4" maxlength="32000" autofocus placeholder="Напишите сообщение…"></textarea>
+            <textarea id="agent-message" name="message" rows="4" maxlength="32000" autofocus placeholder="Опишите проект или задайте вопрос агенту-проектировщику…"></textarea>
             <div class="agent-actions">
               <button id="agent-submit" type="submit">Отправить</button>
               <button id="clear-agent-history" class="secondary-button" type="button">Удалить всю историю</button>
@@ -37,61 +37,33 @@
 
           <p id="status" class="status" aria-live="polite"></p>
 
-          <section class="profile-panel" aria-labelledby="profile-title">
-            <div class="section-heading">
+          <details class="task-panel" aria-labelledby="task-title">
+            <summary class="section-heading">
               <div>
-                <h2 id="profile-title">Профили агента</h2>
-                <p class="hint">Выберите роль или контекст для текущей сессии. Создавайте любые профили: для задачи, аудитории, стиля работы или экспертной роли.</p>
+                <h2 id="task-title">Дашборд плана</h2>
+                <p class="hint">Опишите цель, этапы и стартовый шаг прямо в сообщении чата. Агент-проектировщик заполнит ТЗ и сам будет переводить план между этапами.</p>
               </div>
+              <span class="collapse-label">Показать / скрыть</span>
+            </summary>
+            <div id="task-state" class="task-state" aria-live="polite"></div>
+            <div class="task-actions">
+              <button id="pause-task" class="secondary-button compact-button" type="button">Пауза</button>
+              <button id="resume-task" class="secondary-button compact-button" type="button">Продолжить</button>
+              <button id="toggle-planner" class="secondary-button compact-button" type="button">Отключить планировщик</button>
+              <button id="reset-task" class="secondary-button compact-button" type="button">Сбросить задачу</button>
             </div>
-            <div class="profile-picker">
-              <label for="profile-select">Активный профиль
-                <select id="profile-select"><option value="">Без профиля</option></select>
-              </label>
-              <button id="new-profile" class="secondary-button compact-button" type="button">Новый профиль</button>
-              <button id="delete-profile" class="secondary-button compact-button" type="button" disabled>Удалить профиль</button>
-            </div>
-            <form id="profile-form" class="profile-form">
-              <label for="profile-name">Название профиля
-                <input id="profile-name" maxlength="2000" required placeholder="Например: Химик">
-              </label>
-              <label for="profile-perspective">Роль или контекст
-                <input id="profile-perspective" maxlength="2000" placeholder="Например: редактор Telegram-канала для начинающих специалистов">
-              </label>
-              <label for="profile-style">Стиль
-                <input id="profile-style" maxlength="2000" placeholder="Например: ясно, с научной точностью">
-              </label>
-              <label for="profile-format">Формат
-                <input id="profile-format" maxlength="2000" placeholder="Например: короткий список с примерами">
-              </label>
-              <label for="profile-constraints">Ограничения
-                <input id="profile-constraints" maxlength="2000" placeholder="Например: без англицизмов, до 5 пунктов">
-              </label>
-              <button id="save-profile" class="secondary-button compact-button" type="submit">Создать профиль</button>
-            </form>
-          </section>
+          </details>
 
           <section class="token-panel" aria-labelledby="token-title">
             <h2 id="token-title">Последний запрос к модели</h2>
-            <p id="token-report" class="hint" aria-live="polite">Отправьте сообщение, чтобы увидеть точный расход токенов и состав памяти в контексте.</p>
-          </section>
-
-          <section class="memory-panel" aria-labelledby="memory-title">
-            <div class="section-heading">
-              <div>
-                <h2 id="memory-title">Слои памяти</h2>
-                <p class="hint">Выберите реплику в диалоге и сохраните её целиком в нужный слой. Ключи вводить не нужно.</p>
-              </div>
-            </div>
-            <div id="memory-layers" class="memory-layers" aria-live="polite"></div>
-            <button id="clear-long-term-memory" class="secondary-button compact-button" type="button">Очистить глобальную долговременную память</button>
+            <p id="token-report" class="hint" aria-live="polite">Отправьте сообщение, чтобы увидеть точный расход токенов.</p>
           </section>
 
           <dialog id="context-settings-dialog" aria-labelledby="context-title">
-            <form method="dialog" class="context-settings">
+            <section class="context-settings">
               <div class="dialog-heading">
-                <h2 id="context-title">Управление контекстом</h2>
-                <button class="icon-button" value="cancel" type="submit" aria-label="Закрыть настройки">×</button>
+                <h2 id="context-title">Параметры</h2>
+                <button id="close-context-settings" class="icon-button" type="button" aria-label="Закрыть параметры">×</button>
               </div>
               <label for="context-strategy">Стратегия
                 <select id="context-strategy">
@@ -109,8 +81,61 @@
                 <input id="recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
               </label>
               <p id="strategy-description" class="hint">В модель отправляются только последние N сообщений. Ранние реплики удаляются.</p>
-              <button class="secondary-button dialog-close" value="close" type="submit">Готово</button>
-            </form>
+              <details class="parameter-section" open>
+                <summary>Профили агента</summary>
+                <p class="hint">Роль или контекст для текущей сессии. Профили можно создавать, выбирать и менять.</p>
+                <div class="profile-picker">
+                  <label for="profile-select">Активный профиль
+                    <select id="profile-select"><option value="">Без профиля</option></select>
+                  </label>
+                  <button id="new-profile" class="secondary-button compact-button" type="button">Новый профиль</button>
+                  <button id="delete-profile" class="secondary-button compact-button" type="button" disabled>Удалить профиль</button>
+                </div>
+                <form id="profile-form" class="profile-form">
+                  <label for="profile-name">Название профиля
+                    <input id="profile-name" maxlength="2000" required placeholder="Например: Химик">
+                  </label>
+                  <label for="profile-perspective">Роль или контекст
+                    <input id="profile-perspective" maxlength="2000" placeholder="Например: редактор Telegram-канала">
+                  </label>
+                  <label for="profile-style">Стиль
+                    <input id="profile-style" maxlength="2000" placeholder="Например: ясно, с научной точностью">
+                  </label>
+                  <label for="profile-format">Формат
+                    <input id="profile-format" maxlength="2000" placeholder="Например: короткий список с примерами">
+                  </label>
+                  <label for="profile-constraints">Ограничения
+                    <input id="profile-constraints" maxlength="2000" placeholder="Например: до 5 пунктов">
+                  </label>
+                  <button id="save-profile" class="secondary-button compact-button" type="submit">Создать профиль</button>
+                </form>
+              </details>
+              <details class="parameter-section">
+                <summary>Слои памяти</summary>
+                <p class="hint">Выберите реплику в диалоге и сохраните её в нужный слой. Здесь видны все сохранённые данные.</p>
+                <div id="memory-layers" class="memory-layers" aria-live="polite"></div>
+                <button id="clear-long-term-memory" class="secondary-button compact-button" type="button">Очистить глобальную долговременную память</button>
+              </details>
+              <details class="parameter-section">
+                <summary>Инварианты и ограничения</summary>
+                <p class="hint">Инварианты хранятся отдельно от диалога. При конфликте агент обязан объяснить отказ и предложить совместимый вариант.</p>
+                <form id="invariant-form" class="invariant-form">
+                  <label for="invariant-scope">Где действует правило
+                    <select id="invariant-scope">
+                      <option value="task">Текущая задача</option>
+                      <option value="state">Переходы состояния</option>
+                      <option value="global">Все задачи пользователя</option>
+                    </select>
+                  </label>
+                  <label for="invariant-rule">Инвариант
+                    <textarea id="invariant-rule" rows="3" maxlength="4000" placeholder="Например: Использовать только PostgreSQL; не переходить между этапами без подтверждения пользователя."></textarea>
+                  </label>
+                  <button id="save-invariant" class="secondary-button compact-button" type="submit">Зафиксировать инвариант</button>
+                </form>
+                <div id="invariant-layers" class="invariant-layers" aria-live="polite"></div>
+              </details>
+              <button id="done-context-settings" class="secondary-button dialog-close" type="button">Готово</button>
+            </section>
           </dialog>
         </section>
 
@@ -120,6 +145,6 @@
         </details>
       </section>
     </main>
-    <script src="app.js?v=week-reset-1"></script>
+    <script src="app.js?v=project-dashboard-7"></script>
   </body>
 </html>
