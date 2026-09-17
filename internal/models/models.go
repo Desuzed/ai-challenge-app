@@ -109,6 +109,40 @@ type ContextCommand struct {
 	Model        string          `json:"model,omitempty"`
 	Profile      UserProfile     `json:"profile,omitempty"`
 	ProfileID    string          `json:"profileId,omitempty"`
+	Task         TaskState       `json:"task,omitempty"`
+	Phase        string          `json:"phase,omitempty"`
+}
+
+// TaskStatus describes whether a task can currently progress. Pausing is
+// deliberately independent from its phase, so a task can be paused anywhere
+// in its workflow and later continued from the exact same state.
+type TaskStatus string
+
+const (
+	TaskActive TaskStatus = "active"
+	TaskPaused TaskStatus = "paused"
+	TaskDone   TaskStatus = "done"
+)
+
+// TaskState is the explicit finite-state model for one task. Phases form an
+// ordered, user-configurable workflow; PhaseIndex is the source of truth for
+// allowed next/previous transitions. CurrentStep and ExpectedAction make the
+// hand-off to a later conversation turn concrete instead of requiring the
+// user to repeat prior context.
+type TaskState struct {
+	Goal            string     `json:"goal,omitempty"`
+	Phases          []string   `json:"phases"`
+	Phase           string     `json:"phase,omitempty"`
+	PhaseIndex      int        `json:"phaseIndex"`
+	CurrentStep     string     `json:"currentStep,omitempty"`
+	ExpectedAction  string     `json:"expectedAction,omitempty"`
+	Status          TaskStatus `json:"status"`
+	Specification   string     `json:"specification,omitempty"`
+	OpenQuestions   []string   `json:"openQuestions,omitempty"`
+	Decisions       []string   `json:"decisions,omitempty"`
+	NextSteps       []string   `json:"nextSteps,omitempty"`
+	ArtifactTitle   string     `json:"artifactTitle,omitempty"`
+	ArtifactContent string     `json:"artifactContent,omitempty"`
 }
 
 type AgentResponse struct {
@@ -127,6 +161,8 @@ type AgentResponse struct {
 	Checkpoints     []ConversationCheckpoint `json:"checkpoints,omitempty"`
 	RecentMessages  int                      `json:"recentMessages"`
 	Model           string                   `json:"model"`
+	Task            TaskState                `json:"task"`
+	PendingMessage  string                   `json:"pendingMessage,omitempty"`
 }
 
 // AgentModelsResponse is the safe, key-free catalogue used by the chat UI.
