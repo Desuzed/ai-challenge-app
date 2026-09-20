@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
     <title>AI Challenge — чат</title>
-    <link rel="stylesheet" href="style.css?v=task-state-1">
+    <link rel="stylesheet" href="style.css?v=task-state-2">
   </head>
   <body>
     <main class="container">
@@ -47,6 +47,10 @@
             </summary>
             <div id="task-state" class="task-state" aria-live="polite"></div>
             <div class="task-actions">
+              <button id="approve-plan" class="secondary-button compact-button" type="button">Утвердить план</button>
+              <button id="complete-implementation" class="secondary-button compact-button" type="button">Реализация готова</button>
+              <button id="pass-validation" class="secondary-button compact-button" type="button">Валидация успешна</button>
+              <button id="return-for-rework" class="secondary-button compact-button" type="button">Вернуться к доработке</button>
               <button id="pause-task" class="secondary-button compact-button" type="button">Пауза</button>
               <button id="resume-task" class="secondary-button compact-button" type="button">Продолжить</button>
               <button id="toggle-planner" class="secondary-button compact-button" type="button">Отключить планировщик</button>

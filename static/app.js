@@ -31,6 +31,10 @@ const saveProfile = document.querySelector('#save-profile');
 const taskState = document.querySelector('#task-state');
 const pauseTask = document.querySelector('#pause-task');
 const resumeTask = document.querySelector('#resume-task');
+const approvePlan = document.querySelector('#approve-plan');
+const completeImplementation = document.querySelector('#complete-implementation');
+const passValidation = document.querySelector('#pass-validation');
+const returnForRework = document.querySelector('#return-for-rework');
 const resetTask = document.querySelector('#reset-task');
 const togglePlanner = document.querySelector('#toggle-planner');
 const invariantForm = document.querySelector('#invariant-form');
@@ -180,7 +184,13 @@ function renderTask(task = {}, tokens = {}) {
     meta.className = 'task-meta';
     meta.textContent = `Этап: ${task.phase} · Статус: ${statusLabel(task)}\nТекущий шаг: ${task.currentStep || 'не задан'}\nОжидаемое действие: ${task.expectedAction || 'не задано'}`;
     taskState.append(meta);
+    const lifecycle = dashboardSection('Контроль переходов', null, [
+      `План: ${task.planApproved ? 'утверждён' : 'ожидает утверждения'}.`,
+      `Реализация: ${task.implementationCompleted ? 'готова' : 'не подтверждена'}.`,
+      `Валидация: ${task.validationPassed ? 'успешна' : 'не подтверждена'}.`,
+    ]);
     taskState.append(
+      lifecycle,
       dashboardSection('Текстовое ТЗ', task.specification || 'Агент сформирует ТЗ после первого ответа.'),
       dashboardSection('Открытые вопросы', null, task.openQuestions?.length ? task.openQuestions : ['Нет открытых вопросов.']),
       dashboardSection('Принятые решения', null, task.decisions?.length ? task.decisions : ['Пока нет зафиксированных решений.']),
@@ -191,6 +201,10 @@ function renderTask(task = {}, tokens = {}) {
   }
   pauseTask.disabled = !configured || task.status !== 'active';
   resumeTask.disabled = !configured || task.status !== 'paused';
+  approvePlan.disabled = !configured || task.status !== 'active' || task.phaseIndex !== 0 || task.planApproved;
+  completeImplementation.disabled = !configured || task.status !== 'active' || task.phaseIndex !== 1 || task.implementationCompleted;
+  passValidation.disabled = !configured || task.status !== 'active' || task.phaseIndex !== 2 || task.validationPassed;
+  returnForRework.disabled = !configured || task.phaseIndex === 0 || task.status === 'paused';
   resetTask.disabled = !configured;
   togglePlanner.disabled = false;
   togglePlanner.textContent = window.currentPlannerMode === 'disabled' ? 'Включить планировщик' : 'Отключить планировщик';
@@ -421,6 +435,18 @@ pauseTask.addEventListener('click', async () => {
   try { await patchAgent({ action: 'pause_task' }, 'Не удалось поставить задачу на паузу.'); setStatus('Задача поставлена на паузу.'); }
   catch (error) { setStatus(readableFetchError(error, 'Не удалось изменить состояние задачи.'), true); }
 });
+
+async function applyLifecycleAction(action, success) {
+  try {
+    await patchAgent({ action }, 'Не удалось изменить этап задачи.');
+    setStatus(success);
+  } catch (error) { setStatus(readableFetchError(error, 'Недопустимый переход состояния.'), true); }
+}
+
+approvePlan.addEventListener('click', () => applyLifecycleAction('approve_plan', 'План утверждён: задача перешла к реализации.'));
+completeImplementation.addEventListener('click', () => applyLifecycleAction('complete_implementation', 'Реализация подтверждена: задача перешла к валидации.'));
+passValidation.addEventListener('click', () => applyLifecycleAction('pass_validation', 'Валидация подтверждена: задача завершена.'));
+returnForRework.addEventListener('click', () => applyLifecycleAction('previous_task', 'Задача возвращена на предыдущий этап. Подтверждения следующих этапов сброшены.'));
 
 resumeTask.addEventListener('click', async () => {
   try {

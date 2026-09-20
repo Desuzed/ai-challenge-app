@@ -160,7 +160,7 @@ func TestProjectPlannerSalvagesAnswerAndSpecificationFromTruncatedJSON(t *testin
 	}
 }
 
-func TestProjectPlannerStoresFinalArtifactSeparatelyFromWorkingSpecification(t *testing.T) {
+func TestProjectPlannerStoresFinalArtifactSeparatelyWithoutCompletingTask(t *testing.T) {
 	answer, plan := applyPlannerCompletion(models.TaskState{
 		Goal:          "MVP доставки",
 		Phases:        []string{"planning", "done"},
@@ -175,8 +175,8 @@ func TestProjectPlannerStoresFinalArtifactSeparatelyFromWorkingSpecification(t *
 	if plan.Specification != "Рабочий черновик: согласовать список экранов." {
 		t.Fatalf("working specification was overwritten: %q", plan.Specification)
 	}
-	if plan.Status != models.TaskDone || plan.CurrentStep != "Итоговое ТЗ сформировано" {
-		t.Fatalf("final artifact did not complete task: %#v", plan)
+	if plan.Status == models.TaskDone {
+		t.Fatalf("model artifact must not complete task: %#v", plan)
 	}
 }
 
@@ -196,37 +196,33 @@ func TestPlanApprovalRefreshesDashboardQuestionsAndNextSteps(t *testing.T) {
 		ExpectedAction: "Согласовать состав MVP",
 		OpenQuestions:  []string{"Нужен поиск?", "Нужны акции?"},
 	}, "Подтверждаю план, всё согласовано.")
-	if updated.Phase != "execution" || updated.PhaseIndex != 1 || len(updated.OpenQuestions) != 0 || len(updated.Decisions) != 1 || !strings.Contains(updated.CurrentStep, "execution") || !strings.Contains(updated.ExpectedAction, "execution") || len(updated.NextSteps) != 2 {
+	if updated.Phase != "execution" || updated.PhaseIndex != 1 || !updated.PlanApproved || len(updated.OpenQuestions) != 0 || len(updated.Decisions) != 1 || !strings.Contains(updated.CurrentStep, "execution") || !strings.Contains(updated.ExpectedAction, "реализацию") || len(updated.NextSteps) != 1 {
 		t.Fatalf("updated dashboard = %#v", updated)
 	}
 }
 
-func TestProjectPlannerCanAdvanceOnlyOnePhasePerModelResponse(t *testing.T) {
+func TestProjectPlannerCannotChangePhaseFromModelResponse(t *testing.T) {
 	_, plan := applyPlannerCompletion(models.TaskState{Goal: "MVP", Phases: []string{"planning", "execution", "validation", "done"}, Phase: "planning"}, `{"answer":"Готово.","plan":{"phase":"validation"}}`)
 	if plan.Phase != "planning" || plan.PhaseIndex != 0 {
 		t.Fatalf("planner skipped a phase: %#v", plan)
 	}
 	_, plan = applyPlannerCompletion(plan, `{"answer":"Готово.","plan":{"phase":"execution"}}`)
-	if plan.Phase != "execution" || plan.PhaseIndex != 1 {
-		t.Fatalf("planner did not advance one phase: %#v", plan)
+	if plan.Phase != "planning" || plan.PhaseIndex != 0 {
+		t.Fatalf("planner changed a phase: %#v", plan)
 	}
 	_, plan = applyPlannerCompletion(plan, `{"answer":"Возвращаю.","plan":{"phase":"planning"}}`, "Вернись в planning, нужно доработать требования.")
 	if plan.Phase != "planning" || plan.PhaseIndex != 0 {
-		t.Fatalf("planner did not return on user request: %#v", plan)
+		t.Fatalf("planner changed a phase on return request: %#v", plan)
 	}
 }
 
-func TestProjectDashboardLetsUserReturnToAnyNamedStage(t *testing.T) {
+func TestProjectDashboardRejectsDirectPhaseSwitch(t *testing.T) {
 	agent := New(&fakeCompleter{})
 	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Текстовое ТЗ", Phases: []string{"planning", "execution", "validation", "done"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "switch_task_phase", Phase: "execution"}); err != nil {
-		t.Fatal(err)
-	}
-	returned, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "switch_task_phase", Phase: "planning"})
-	if err != nil || returned.Task.Phase != "planning" || returned.Task.PhaseIndex != 0 || returned.Task.Status != models.TaskActive || !strings.Contains(returned.Task.CurrentStep, "planning") || !strings.Contains(returned.Task.ExpectedAction, "planning") {
-		t.Fatalf("returned stage = %#v, err=%v", returned.Task, err)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "switch_task_phase", Phase: "execution"}); err == nil || !strings.Contains(err.Error(), "запрещено") {
+		t.Fatalf("direct switch must be rejected, err=%v", err)
 	}
 }
 
@@ -265,8 +261,8 @@ func TestStateInvariantBlocksAutomaticTransitionUntilApproval(t *testing.T) {
 		t.Fatalf("transition without approval = %#v", task)
 	}
 	_, task = applyPlannerCompletion(task, `{"answer":"Перехожу.","plan":{"phase":"execution"}}`, "Подтверждаю план")
-	if task.Phase != "execution" {
-		t.Fatalf("transition with approval = %#v", task)
+	if task.Phase != "planning" {
+		t.Fatalf("model transition with approval = %#v", task)
 	}
 }
 
@@ -368,14 +364,17 @@ func TestTaskStateMachineOnlyMovesToAdjacentPhasesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Проверить задачу", Phases: []string{"draft", "review", "done"}}}); err != nil {
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Проверить задачу", Phases: []string{"planning", "execution", "validation", "done"}}}); err != nil {
 		t.Fatal(err)
 	}
-	advanced, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"})
-	if err != nil || advanced.Task.Phase != "review" || advanced.Task.PhaseIndex != 1 || advanced.Task.Status != models.TaskActive {
+	advanced, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "approve_plan"})
+	if err != nil || advanced.Task.Phase != "execution" || advanced.Task.PhaseIndex != 1 || advanced.Task.Status != models.TaskActive {
 		t.Fatalf("advanced state = %#v, err=%v", advanced.Task, err)
 	}
-	completed, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"})
+	if _, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "complete_implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := first.ApplyContextCommand("session", models.ContextCommand{Action: "pass_validation"})
 	if err != nil || completed.Task.Phase != "done" || completed.Task.Status != models.TaskDone {
 		t.Fatalf("completed state = %#v, err=%v", completed.Task, err)
 	}
@@ -386,8 +385,60 @@ func TestTaskStateMachineOnlyMovesToAdjacentPhasesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored := second.State("session").Task; restored.Phase != "done" || restored.Status != models.TaskDone || !reflect.DeepEqual(restored.Phases, []string{"draft", "review", "done"}) {
+	if restored := second.State("session").Task; restored.Phase != "done" || restored.Status != models.TaskDone || !restored.PlanApproved || !restored.ImplementationCompleted || !restored.ValidationPassed || !reflect.DeepEqual(restored.Phases, []string{"planning", "execution", "validation", "done"}) {
 		t.Fatalf("restored task = %#v", restored)
+	}
+}
+
+func TestTaskLifecycleRejectsInvalidTransitionsAndKeepsState(t *testing.T) {
+	agent := New(&fakeCompleter{})
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{
+		Goal: "Проверить жизненный цикл", Phases: []string{"planning", "execution", "validation", "done"},
+		// A caller must not be able to forge evidence in the configuration.
+		PlanApproved: true, ValidationPassed: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"}); err == nil || !strings.Contains(err.Error(), "утвердите план") {
+		t.Fatalf("planning -> execution without approval must fail, err=%v", err)
+	}
+	if state := agent.State("session").Task; state.Phase != "planning" || state.PlanApproved || state.ValidationPassed {
+		t.Fatalf("failed transition changed or accepted forged state: %#v", state)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "complete_implementation"}); err == nil || !strings.Contains(err.Error(), "Нельзя") {
+		t.Fatalf("completion outside execution must fail, err=%v", err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "approve_plan"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"}); err == nil || !strings.Contains(err.Error(), "реализацию") {
+		t.Fatalf("execution -> validation without completion must fail, err=%v", err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "complete_implementation"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "advance_task"}); err == nil || !strings.Contains(err.Error(), "валидацию") {
+		t.Fatalf("validation -> done without validation must fail, err=%v", err)
+	}
+}
+
+func TestReturningForReworkInvalidatesLaterLifecycleEvidence(t *testing.T) {
+	agent := New(&fakeCompleter{})
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "ТЗ", Phases: []string{"planning", "execution", "validation", "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"approve_plan", "complete_implementation", "pass_validation"} {
+		if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: action}); err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+	}
+	returned, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "previous_task"})
+	if err != nil || returned.Task.Phase != "validation" || returned.Task.Status != models.TaskActive || returned.Task.ValidationPassed {
+		t.Fatalf("return from done must reopen validation: %#v, err=%v", returned.Task, err)
+	}
+	returned, err = agent.ApplyContextCommand("session", models.ContextCommand{Action: "previous_task"})
+	if err != nil || returned.Task.Phase != "execution" || returned.Task.ImplementationCompleted || returned.Task.ValidationPassed {
+		t.Fatalf("return to execution must invalidate later proof: %#v, err=%v", returned.Task, err)
 	}
 }
 

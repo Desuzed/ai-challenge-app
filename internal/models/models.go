@@ -159,6 +159,12 @@ type TaskState struct {
 	// RequireApprovalForTransition makes an automatic phase change impossible
 	// until the current user message explicitly approves it.
 	RequireApprovalForTransition bool `json:"requireApprovalForTransition,omitempty"`
+	// Transition evidence is written only by the server-side lifecycle
+	// commands. It is deliberately separate from a model response, so a model
+	// cannot complete a task merely by claiming that an earlier stage is done.
+	PlanApproved            bool `json:"planApproved,omitempty"`
+	ImplementationCompleted bool `json:"implementationCompleted,omitempty"`
+	ValidationPassed        bool `json:"validationPassed,omitempty"`
 }
 
 type AgentResponse struct {

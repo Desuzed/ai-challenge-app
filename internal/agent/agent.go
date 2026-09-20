@@ -29,7 +29,7 @@ const projectPlannerPrompt = `Ты агент-проектировщик. Не �
 Верни ТОЛЬКО корректный JSON без markdown-ограждений:
 {"answer":"краткий понятный ответ пользователю","plan":{"phase":"точное название текущего этапа из состояния","specification":"рабочее подробное текстовое ТЗ","currentStep":"...","expectedAction":"...","openQuestions":["..."],"decisions":["..."],"nextSteps":["..."],"artifactTitle":"название итогового артефакта","artifactContent":"самостоятельное итоговое ТЗ в Markdown"}}
 
-Этапами управляет агент, а не пользователь. Всегда возвращай phase. Когда результат текущего этапа подтверждён и все его вопросы закрыты, переводи phase на следующий этап из сценария и сразу начинай его проработку. Не перепрыгивай через этапы; при недостающих решениях оставайся на текущем этапе. Если пользователь просит вернуться к доработке, верни phase на подходящий предыдущий этап. В КАЖДОМ ответе возвращай полный актуальный набор openQuestions, decisions и nextSteps, а не только изменения. Если пользователь утвердил план или решил вопрос, убери закрытые пункты из openQuestions, добавь решение в decisions и обнови currentStep, expectedAction и nextSteps для следующего осмысленного действия. Никогда не оставляй в тексте ТЗ или ожидаемом действии название прошлого этапа.
+Этапами и переходами управляет сервер, а не ты. Всегда возвращай phase текущего состояния, но НИКОГДА не меняй его в ответе: можешь только подготовить результат текущего этапа и объяснить, какое явное действие ожидается от пользователя. Не перепрыгивай через этапы. Если пользователь просит вернуться к доработке, опиши нужную доработку, но не меняй phase. В КАЖДОМ ответе возвращай полный актуальный набор openQuestions, decisions и nextSteps, а не только изменения. Если пользователь утвердил план или решил вопрос, убери закрытые пункты из openQuestions, добавь решение в decisions и обнови currentStep, expectedAction и nextSteps для следующего осмысленного действия. Никогда не оставляй в тексте ТЗ или ожидаемом действии название прошлого этапа.
 
 artifactTitle и artifactContent заполняй автоматически, когда агент перешёл на последний этап и все пункты плана закрыты: нет openQuestions, а текущий шаг завершён. artifactContent — отдельный, самодостаточный Markdown-документ, а не ответ в чате: включи цель, границы, роли и сценарии, функциональные и нефункциональные требования, данные и интеграции, принятые решения, риски, критерии приёмки. Не включай код и не реализуй приложение. До финального этапа не возвращай эти поля, чтобы не перезаписать ранее сформированный артефакт.`
 const defaultRecentMessages = 10
@@ -556,6 +556,12 @@ func (a *Agent) ApplyContextCommandForUser(userID, sessionID string, command mod
 		err = c.updateTaskLocked(command.Task)
 	case "advance_task":
 		err = c.advanceTaskLocked()
+	case "approve_plan":
+		err = c.approvePlanLocked()
+	case "complete_implementation":
+		err = c.completeImplementationLocked()
+	case "pass_validation":
+		err = c.passValidationLocked()
 	case "previous_task":
 		err = c.previousTaskLocked()
 	case "switch_task_phase":
@@ -680,37 +686,27 @@ func applyPlannerCompletion(current models.TaskState, raw string, sourceMessages
 	if completion.Plan.NextSteps != nil {
 		updated.NextSteps = cleanPlanItems(completion.Plan.NextSteps)
 	}
-	allowReturn := len(sourceMessages) > 0 && isPhaseReturnRequest(sourceMessages[0])
-	approved := len(sourceMessages) > 0 && isPlanApproval(sourceMessages[0], current.ExpectedAction)
-	applyPlannerPhase(&updated, completion.Plan.Phase, allowReturn, approved)
+	applyPlannerPhase(&updated, completion.Plan.Phase)
 	if value := strings.TrimSpace(completion.Plan.ArtifactTitle); value != "" {
 		updated.ArtifactTitle = value
 	}
 	if value := strings.TrimSpace(completion.Plan.ArtifactContent); value != "" {
 		updated.ArtifactContent = value
 	}
-	if updated.ArtifactContent != "" && updated.PhaseIndex == len(updated.Phases)-1 && len(updated.OpenQuestions) == 0 {
-		updated.Status = models.TaskDone
-		updated.CurrentStep = "Итоговое ТЗ сформировано"
-		updated.ExpectedAction = "Артефакт готов. При необходимости вернитесь к нужному этапу и уточните план."
-		updated.NextSteps = []string{"Передать итоговое ТЗ в работу или вернуться к этапу для доработки."}
-	}
 	return completion.Answer, updated
 }
 
-// applyPlannerPhase accepts only the current stage or its immediate successor.
-// This lets the planner advance autonomously but prevents a malformed model
-// response from skipping validation or jumping to done.
-func applyPlannerPhase(task *models.TaskState, phase string, allowReturn, approved bool) {
+// applyPlannerPhase accepts only the current stage. Lifecycle changes are
+// server commands with explicit evidence, never a model-controlled field.
+func applyPlannerPhase(task *models.TaskState, phase string) {
 	phase = strings.TrimSpace(phase)
 	if phase == "" {
 		return
 	}
 	for index, candidate := range task.Phases {
-		allowed := index == task.PhaseIndex || index == task.PhaseIndex+1 || (allowReturn && index < task.PhaseIndex)
-		if task.RequireApprovalForTransition && index != task.PhaseIndex && !approved {
-			allowed = false
-		}
+		// Phase transitions are application commands with explicit evidence.
+		// The model may echo the current phase, but cannot advance or return it.
+		allowed := index == task.PhaseIndex
 		if candidate != phase || !allowed {
 			continue
 		}
@@ -809,39 +805,23 @@ func hasApprovalStateInvariant(items []models.Invariant) bool {
 	return false
 }
 
-func isPhaseReturnRequest(message string) bool {
-	lower := strings.ToLower(message)
-	return strings.Contains(lower, "верни") || strings.Contains(lower, "назад") || strings.Contains(lower, "предыдущ") || strings.Contains(lower, "доработ")
-}
-
 // updatePlannerProgress supplies a deterministic state transition for the
 // common explicit approval case. It prevents a stale dashboard if a provider
 // acknowledges an approved plan in prose but forgets to update its JSON.
 func updatePlannerProgress(task models.TaskState, message string) models.TaskState {
-	if !isPlanApproval(message, task.ExpectedAction) {
+	if !isPlanApproval(message, task.ExpectedAction) || task.PhaseIndex != 0 || task.PlanApproved {
 		return task
 	}
 	updated := copyTaskState(task)
+	updated.PlanApproved = true
 	updated.OpenQuestions = nil
 	updated.Decisions = appendUniquePlanItem(updated.Decisions, "План утвержден пользователем.")
 	nextPhase := ""
 	if updated.PhaseIndex+1 < len(updated.Phases) {
 		nextPhase = updated.Phases[updated.PhaseIndex+1]
 	}
-	if nextPhase == "" {
-		updated.CurrentStep = "Завершить итоговое текстовое ТЗ"
-		updated.ExpectedAction = "Сформировать и проверить итоговый артефакт проекта."
-		updated.NextSteps = []string{"Сформировать итоговое текстовое ТЗ.", "Проверить артефакт и завершить проект."}
-		return updated
-	}
-	updated.PhaseIndex++
-	updated.Phase = nextPhase
-	updated.Status = models.TaskActive
-	updated.CurrentStep = "Начать проработку этапа «" + nextPhase + "»"
-	updated.ExpectedAction = "Проработать и подтвердить результаты этапа «" + nextPhase + "»."
-	updated.NextSteps = []string{
-		"Сформировать подробное текстовое ТЗ для этапа «" + nextPhase + "».",
-		"Подтвердить результаты этапа «" + nextPhase + "».",
+	if nextPhase != "" {
+		advanceTask(&updated)
 	}
 	return updated
 }
@@ -957,6 +937,16 @@ func (c *conversation) configureTaskLocked(task models.TaskState) error {
 	task.PhaseIndex = 0
 	task.Phase = task.Phases[0]
 	task.Status = models.TaskActive
+	// Lifecycle evidence is never accepted from a client-supplied task object.
+	// It is earned only through the explicit server-side transition commands.
+	task.PlanApproved = false
+	task.ImplementationCompleted = false
+	task.ValidationPassed = false
+	task.ArtifactTitle = ""
+	task.ArtifactContent = ""
+	if task.ExpectedAction == "" {
+		task.ExpectedAction = expectedLifecycleAction(task)
+	}
 	c.task = copyTaskState(task)
 	return nil
 }
@@ -1002,12 +992,98 @@ func (c *conversation) advanceTaskLocked() error {
 	if c.task.Status == models.TaskDone || c.task.PhaseIndex >= len(c.task.Phases)-1 {
 		return errors.New("Задача уже находится в финальном состоянии.")
 	}
-	c.task.PhaseIndex++
-	c.task.Phase = c.task.Phases[c.task.PhaseIndex]
-	c.task.CurrentStep = ""
-	c.task.ExpectedAction = ""
-	if c.task.PhaseIndex == len(c.task.Phases)-1 {
-		c.task.Status = models.TaskDone
+	if err := transitionGuard(c.task); err != nil {
+		return err
+	}
+	advanceTask(&c.task)
+	return nil
+}
+
+// transitionGuard defines the only forward lifecycle edges. The task may use
+// custom labels, but their position is fixed: plan -> work -> validation ->
+// final. The proof flags can only be set by explicit commands below.
+func transitionGuard(task models.TaskState) error {
+	switch task.PhaseIndex {
+	case 0:
+		if !task.PlanApproved {
+			return errors.New("Нельзя начать реализацию: сначала утвердите план.")
+		}
+	case 1:
+		if !task.ImplementationCompleted {
+			return errors.New("Нельзя перейти к валидации: сначала отметьте реализацию как готовую.")
+		}
+	case 2:
+		if !task.ValidationPassed {
+			return errors.New("Нельзя завершить задачу: сначала подтвердите успешную валидацию.")
+		}
+	}
+	return nil
+}
+
+func advanceTask(task *models.TaskState) {
+	task.PhaseIndex++
+	task.Phase = task.Phases[task.PhaseIndex]
+	task.CurrentStep = "Начать этап «" + task.Phase + "»"
+	task.ExpectedAction = expectedLifecycleAction(*task)
+	task.NextSteps = []string{task.ExpectedAction}
+	task.Status = models.TaskActive
+	if task.PhaseIndex == len(task.Phases)-1 {
+		task.Status = models.TaskDone
+		task.CurrentStep = "Итоговый артефакт готов к выдаче"
+		task.ExpectedAction = "Задача завершена после успешной валидации."
+		task.NextSteps = []string{"Передать итоговый артефакт пользователю."}
+	}
+}
+
+func expectedLifecycleAction(task models.TaskState) string {
+	switch task.PhaseIndex {
+	case 0:
+		return "Согласовать и явно утвердить план."
+	case 1:
+		return "Выполнить работу и отметить реализацию готовой."
+	case 2:
+		return "Провести проверку и подтвердить успешную валидацию."
+	default:
+		return "Продолжить работу по текущему этапу."
+	}
+}
+
+func (c *conversation) approvePlanLocked() error {
+	if err := c.requireLifecyclePhaseLocked(0, "утвердить план"); err != nil {
+		return err
+	}
+	c.task.PlanApproved = true
+	return c.advanceTaskLocked()
+}
+
+func (c *conversation) completeImplementationLocked() error {
+	if err := c.requireLifecyclePhaseLocked(1, "отметить реализацию готовой"); err != nil {
+		return err
+	}
+	c.task.ImplementationCompleted = true
+	return c.advanceTaskLocked()
+}
+
+func (c *conversation) passValidationLocked() error {
+	if err := c.requireLifecyclePhaseLocked(2, "подтвердить успешную валидацию"); err != nil {
+		return err
+	}
+	c.task.ValidationPassed = true
+	return c.advanceTaskLocked()
+}
+
+func (c *conversation) requireLifecyclePhaseLocked(index int, action string) error {
+	if c.task.Goal == "" {
+		return errors.New("Сначала настройте задачу.")
+	}
+	if c.task.Status == models.TaskPaused {
+		return errors.New("Сначала продолжите задачу.")
+	}
+	if c.task.Status == models.TaskDone {
+		return errors.New("Задача уже завершена.")
+	}
+	if c.task.PhaseIndex != index {
+		return fmt.Errorf("Нельзя %s на этапе «%s».", action, c.task.Phase)
 	}
 	return nil
 }
@@ -1022,8 +1098,25 @@ func (c *conversation) previousTaskLocked() error {
 	c.task.PhaseIndex--
 	c.task.Phase = c.task.Phases[c.task.PhaseIndex]
 	c.task.Status = models.TaskActive
-	c.task.CurrentStep = ""
-	c.task.ExpectedAction = ""
+	// Returning for rework invalidates every proof produced after the target
+	// stage. Otherwise an old validation result could incorrectly complete a
+	// changed implementation.
+	switch c.task.PhaseIndex {
+	case 0:
+		c.task.PlanApproved = false
+		c.task.ImplementationCompleted = false
+		c.task.ValidationPassed = false
+	case 1:
+		c.task.ImplementationCompleted = false
+		c.task.ValidationPassed = false
+	case 2:
+		c.task.ValidationPassed = false
+	}
+	c.task.ArtifactTitle = ""
+	c.task.ArtifactContent = ""
+	c.task.CurrentStep = "Вернуться к доработке этапа «" + c.task.Phase + "»"
+	c.task.ExpectedAction = expectedLifecycleAction(c.task)
+	c.task.NextSteps = []string{c.task.ExpectedAction}
 	return nil
 }
 
@@ -1031,22 +1124,7 @@ func (c *conversation) switchTaskPhaseLocked(phase string) error {
 	if c.task.Goal == "" {
 		return errors.New("Сначала опишите цель и этапы в сообщении чата.")
 	}
-	phase = strings.TrimSpace(phase)
-	for index, candidate := range c.task.Phases {
-		if candidate == phase {
-			c.task.PhaseIndex = index
-			c.task.Phase = candidate
-			c.task.Status = models.TaskActive
-			c.task.CurrentStep = "Актуализировать план для этапа «" + candidate + "»"
-			c.task.ExpectedAction = "Проработать и подтвердить результаты этапа «" + candidate + "»."
-			c.task.NextSteps = []string{
-				"Актуализировать ТЗ для этапа «" + candidate + "».",
-				"Подтвердить результаты этапа и перейти к следующему этапу плана.",
-			}
-			return nil
-		}
-	}
-	return errors.New("Этап не найден в плане задачи.")
+	return errors.New("Прямое переключение этапов запрещено. Используйте допустимый переход жизненного цикла или вернитесь к задаче через доработку.")
 }
 
 func (c *conversation) pauseTaskLocked() error {
