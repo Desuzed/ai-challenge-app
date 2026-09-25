@@ -53,6 +53,141 @@ func TestPersistentAgentRestoresHistoryAfterRestart(t *testing.T) {
 	}
 }
 
+type scriptedToolClient struct {
+	completions []models.ModelCompletion
+	requests    [][]models.ChatMessage
+	tools       [][]models.ToolDefinition
+}
+
+func (f *scriptedToolClient) CompleteMessages(_ context.Context, _ []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
+	return models.ModelCompletion{}, errors.New("unexpected completion without tools")
+}
+
+func (f *scriptedToolClient) CompleteMessagesModelWithTools(_ context.Context, _ string, messages []models.ChatMessage, _ models.GenerationSettings, tools []models.ToolDefinition) (models.ModelCompletion, error) {
+	f.requests = append(f.requests, copyMessages(messages))
+	f.tools = append(f.tools, append([]models.ToolDefinition(nil), tools...))
+	if len(f.completions) == 0 {
+		return models.ModelCompletion{}, errors.New("no scripted completion")
+	}
+	result := f.completions[0]
+	f.completions = f.completions[1:]
+	return result, nil
+}
+
+type fakeToolRuntime struct {
+	calls []struct {
+		name string
+		args map[string]any
+	}
+}
+
+func (f *fakeToolRuntime) ToolsForModel(context.Context) ([]models.ToolDefinition, error) {
+	return []models.ToolDefinition{
+		{Type: "function", Function: models.ToolFunction{Name: "list_desktop_videos", Parameters: map[string]any{"type": "object"}}},
+		{Type: "function", Function: models.ToolFunction{Name: "upload_video_to_yandex", Parameters: map[string]any{"type": "object"}}},
+	}, nil
+}
+
+func (f *fakeToolRuntime) CallForModel(_ context.Context, name string, args map[string]any) (string, bool, error) {
+	copied := make(map[string]any, len(args))
+	for key, value := range args {
+		copied[key] = value
+	}
+	f.calls = append(f.calls, struct {
+		name string
+		args map[string]any
+	}{name: name, args: copied})
+	if name == "list_desktop_videos" {
+		return `{"videos":[{"name":"demo.mov","sizeBytes":100}]}`, false, nil
+	}
+	return `{"diskPath":"disk:/AI Challenge/lession 16/demo.mov","sizeBytes":100}`, false, nil
+}
+
+func TestAgentUsesMCPAndRequiresConfirmationBeforeUpload(t *testing.T) {
+	client := &scriptedToolClient{completions: []models.ModelCompletion{
+		{ToolCalls: []models.ToolCall{{ID: "upload-1", Type: "function", Function: models.ToolCallFunction{Name: "upload_video_to_yandex", Arguments: `{"videoName":"demo.mov","lessonFolder":"lession 16","confirm":true}`}}}},
+		{Answer: "Нашёл demo.mov. Подтвердите загрузку в AI Challenge/lession 16."},
+		{ToolCalls: []models.ToolCall{{ID: "upload-2", Type: "function", Function: models.ToolCallFunction{Name: "upload_video_to_yandex", Arguments: `{"videoName":"demo.mov","lessonFolder":"lession 16","confirm":false}`}}}},
+		{Answer: "Видео загружено в disk:/AI Challenge/lession 16/demo.mov."},
+	}}
+	runtime := &fakeToolRuntime{}
+	a := New(client)
+	a.SetToolRuntime(runtime)
+
+	first, err := a.Respond(context.Background(), "tool-session", "Загрузи последнее видео в папку lession 16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first.Answer, "Подтвердите") {
+		t.Fatalf("first answer = %q", first.Answer)
+	}
+	if len(runtime.calls) != 1 || runtime.calls[0].name != "list_desktop_videos" {
+		t.Fatalf("calls before confirmation = %#v", runtime.calls)
+	}
+
+	second, err := a.Respond(context.Background(), "tool-session", "Подтверждаю, загружай")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(second.Answer, "действительно загружено") {
+		t.Fatalf("second answer = %q", second.Answer)
+	}
+	if len(runtime.calls) != 3 || runtime.calls[1].name != "list_desktop_videos" || runtime.calls[2].name != "upload_video_to_yandex" || runtime.calls[2].args["confirm"] != true {
+		t.Fatalf("calls after confirmation = %#v", runtime.calls)
+	}
+	if len(client.tools) == 0 || len(client.tools[0]) != 2 {
+		t.Fatalf("tools passed to model = %#v", client.tools)
+	}
+}
+
+func TestToolIntentIncludesReadOnlyDesktopQuestions(t *testing.T) {
+	for _, message := range []string{
+		"Какие видео есть на рабочем столе?",
+		"Посмотри записи на Desktop",
+		"Покажи, что лежит на рабочем столе",
+		"Проанализируй последнее видео",
+		"Какое разрешение и FPS у записи?",
+		"Поместится ли видео на Яндекс Диск?",
+	} {
+		if !toolIntent(message) {
+			t.Fatalf("toolIntent(%q) = false", message)
+		}
+	}
+	if toolIntent("Расскажи, что такое рабочий стол операционной системы") {
+		t.Fatal("generic desktop question must not activate MCP")
+	}
+}
+
+func TestToolFollowupIntentUsesPreviousVideoContext(t *testing.T) {
+	previous := []models.ChatMessage{{Role: "assistant", Content: "Нашёл видео test_name.mov."}}
+	if !toolFollowupIntent("Сколько места оно займёт?", previous) {
+		t.Fatal("video follow-up must activate MCP")
+	}
+	if toolFollowupIntent("Расскажи подробнее", previous) {
+		t.Fatal("generic follow-up must not activate MCP")
+	}
+	retryContext := []models.ChatMessage{{Role: "assistant", Content: "Загрузить видео на Яндекс Диск не удалось: папка отсутствует."}}
+	if !toolFollowupIntent("Папку создал, попробуй ещё раз", retryContext) {
+		t.Fatal("retry after creating folder must activate MCP")
+	}
+	if !explicitUploadConfirmation("Папку создал, попробуй ещё раз") {
+		t.Fatal("explicit retry must authorize the repeated upload")
+	}
+}
+
+func TestGroundedUploadAnswerNeverClaimsSuccessWithoutToolResult(t *testing.T) {
+	answer := groundedUploadAnswer("Файл загружен, ожидайте.", nil, true)
+	if strings.Contains(answer, "ожидайте") || !strings.Contains(answer, "не выполнена") {
+		t.Fatalf("answer = %q", answer)
+	}
+	success := groundedUploadAnswer("модельный текст", []models.ToolExecution{{
+		Name: "upload_video_to_yandex", Result: `{"diskPath":"disk:/AI Challenge/lession 16/demo.mov","sizeBytes":100}`,
+	}}, true)
+	if !strings.Contains(success, "действительно загружено") || !strings.Contains(success, "lession 16") {
+		t.Fatalf("success = %q", success)
+	}
+}
+
 func TestClearRemovesPersistentSession(t *testing.T) {
 	store := NewJSONStore(filepath.Join(t.TempDir(), "agent-history.json"))
 	first, err := NewPersistent(&fakeCompleter{answer: "Ответ"}, store)

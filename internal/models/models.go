@@ -14,8 +14,34 @@ const (
 // ChatMessage is a provider-neutral dialogue message. The agent owns the
 // sequence of these messages; the API client only serializes it for the LLM.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// ToolDefinition and ToolCall mirror the provider-neutral subset shared by
+// MCP tools and OpenAI-compatible chat-completion function calling.
+type ToolDefinition struct {
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
+}
+
+type ToolFunction struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // ContextStrategy selects the information that reaches the model. None of the
@@ -187,6 +213,7 @@ type AgentResponse struct {
 	PendingMessage   string                   `json:"pendingMessage,omitempty"`
 	GlobalInvariants []Invariant              `json:"globalInvariants,omitempty"`
 	PlannerMode      string                   `json:"plannerMode"`
+	ToolExecutions   []ToolExecution          `json:"toolExecutions,omitempty"`
 }
 
 // AgentModelsResponse is the safe, key-free catalogue used by the chat UI.
@@ -390,9 +417,18 @@ type ModelUsage struct {
 }
 
 type ModelCompletion struct {
-	Answer       string
-	FinishReason string
-	Usage        ModelUsage
+	Answer         string
+	FinishReason   string
+	Usage          ModelUsage
+	ToolCalls      []ToolCall
+	ToolExecutions []ToolExecution
+}
+
+type ToolExecution struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+	Result    string         `json:"result,omitempty"`
+	IsError   bool           `json:"isError"`
 }
 
 type ModelVersionRun struct {

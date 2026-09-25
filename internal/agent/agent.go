@@ -32,6 +32,7 @@ const projectPlannerPrompt = `Ты агент-проектировщик. Не �
 Этапами и переходами управляет сервер, а не ты. Всегда возвращай phase текущего состояния, но НИКОГДА не меняй его в ответе: можешь только подготовить результат текущего этапа и объяснить, какое явное действие ожидается от пользователя. Не перепрыгивай через этапы. Если пользователь просит вернуться к доработке, опиши нужную доработку, но не меняй phase. В КАЖДОМ ответе возвращай полный актуальный набор openQuestions, decisions и nextSteps, а не только изменения. Если пользователь утвердил план или решил вопрос, убери закрытые пункты из openQuestions, добавь решение в decisions и обнови currentStep, expectedAction и nextSteps для следующего осмысленного действия. Никогда не оставляй в тексте ТЗ или ожидаемом действии название прошлого этапа.
 
 artifactTitle и artifactContent заполняй автоматически, когда агент перешёл на последний этап и все пункты плана закрыты: нет openQuestions, а текущий шаг завершён. artifactContent — отдельный, самодостаточный Markdown-документ, а не ответ в чате: включи цель, границы, роли и сценарии, функциональные и нефункциональные требования, данные и интеграции, принятые решения, риски, критерии приёмки. Не включай код и не реализуй приложение. До финального этапа не возвращай эти поля, чтобы не перезаписать ранее сформированный артефакт.`
+const toolSystemPrompt = `У тебя есть MCP-инструменты для работы с видео и Яндекс Диском. Сервер добавляет в контекст авторитетный свежий результат list_desktop_videos. Используй имя файла из него БУКВАЛЬНО и никогда не придумывай имена. Для списка и поиска отвечай по этому результату. Для длительности, кодеков, разрешения и FPS вызови analyze_desktop_video. Для размера, свободного места и проверки, поместится ли файл на Диск, вызови estimate_video_upload. Папка назначения должна быть взята из сообщения пользователя; если она не указана, задай короткий уточняющий вопрос. Для загрузки вызови upload_video_to_yandex. Загрузка является внешней записью: если результат инструмента сообщает confirmation_required, назови выбранный реальный файл и путь назначения и попроси явное подтверждение. После подтверждения пользователя продолжи вызов upload_video_to_yandex. Никогда не утверждай, что файл проанализирован, проверен или загружен, пока соответствующий инструмент не вернул успешный результат.`
 const defaultRecentMessages = 10
 const minRecentMessages = 2
 const maxRecentMessages = 40
@@ -48,6 +49,15 @@ type completer interface {
 
 type modelCompleter interface {
 	CompleteMessagesModel(context.Context, string, []models.ChatMessage, models.GenerationSettings) (models.ModelCompletion, error)
+}
+
+type toolCompleter interface {
+	CompleteMessagesModelWithTools(context.Context, string, []models.ChatMessage, models.GenerationSettings, []models.ToolDefinition) (models.ModelCompletion, error)
+}
+
+type toolRuntime interface {
+	ToolsForModel(context.Context) ([]models.ToolDefinition, error)
+	CallForModel(context.Context, string, map[string]any) (string, bool, error)
 }
 
 type dialogueBranch struct {
@@ -99,9 +109,13 @@ type Agent struct {
 	persistMu sync.Mutex
 	sessions  map[string]*conversation
 	users     map[string]*userState
+	tools     toolRuntime
 }
 
 func New(client completer) *Agent { return newAgent(client, nil, PersistentState{}) }
+
+// SetToolRuntime attaches an MCP-backed tool catalogue and executor.
+func (a *Agent) SetToolRuntime(runtime toolRuntime) { a.tools = runtime }
 func NewPersistent(client completer, store Store) (*Agent, error) {
 	state, err := store.Load()
 	if err != nil {
@@ -213,19 +227,21 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 	if c.task.Status == models.TaskPaused {
 		return a.respondWhileTaskPausedLocked(c, u, message)
 	}
-	if plannerEnabled(c) {
+	previous := copyMessages(c.activeMessagesLocked())
+	toolTurn := a.tools != nil && (toolIntent(message) || toolFollowupIntent(message, previous) || awaitingToolConfirmation(previous))
+	plannerTurn := plannerEnabled(c) && !toolTurn
+	if plannerTurn {
 		// An explicit approval closes the current stage before the model sees the
 		// request, so its response is written for the newly active stage.
 		c.task = updatePlannerProgress(c.task, message)
 	}
 	c.pendingMessage = ""
-	previous := copyMessages(c.activeMessagesLocked())
 	c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "user", Content: message}))
 	beforeFacts := copyFactsMap(c.facts)
 	if c.strategy == models.StrategyFacts {
 		updateFacts(c.facts, message)
 	}
-	request := a.requestMessagesLocked(c, u)
+	request := a.requestMessagesForModeLocked(c, u, plannerTurn)
 	report := a.tokenReportLocked(c, request, message, models.ModelUsage{})
 	if report.EstimatedRequestTokens+report.ReservedOutputTokens > report.ContextLimitTokens {
 		c.setActiveMessagesLocked(previous)
@@ -234,7 +250,7 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		return models.AgentResponse{}, ErrContextLimit
 	}
 	workCtx := c.startWork(ctx)
-	if plannerEnabled(c) {
+	if plannerTurn {
 		select {
 		case <-time.After(plannerPauseWindow):
 		case <-workCtx.Done():
@@ -249,7 +265,7 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		c.task = previousTask
 		return models.AgentResponse{}, err
 	}
-	completion, err := a.completeLocked(workCtx, c.model, request, plannerEnabled(c))
+	completion, err := a.completeLocked(workCtx, c.model, request, plannerTurn, toolTurn, message)
 	pauseRequested := c.finishWork()
 	if pauseRequested {
 		return a.respondAfterActivePauseLocked(c, u, previous, beforeFacts, message)
@@ -261,7 +277,7 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		return models.AgentResponse{}, err
 	}
 	answer := completion.Answer
-	if plannerEnabled(c) {
+	if plannerTurn {
 		answer, c.task = applyPlannerCompletion(c.task, completion.Answer, message)
 	}
 	c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "assistant", Content: answer}))
@@ -275,7 +291,9 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		return models.AgentResponse{}, ErrHistorySave
 	}
 	report = a.tokenReportLocked(c, request, message, completion.Usage)
-	return a.responseLocked(c, u, answer, request, report), nil
+	response := a.responseLocked(c, u, answer, request, report)
+	response.ToolExecutions = append([]models.ToolExecution(nil), completion.ToolExecutions...)
+	return response, nil
 }
 
 func (a *Agent) respondAfterActivePauseLocked(c *conversation, u *userState, previous []models.ChatMessage, beforeFacts map[string]string, message string) (models.AgentResponse, error) {
@@ -354,10 +372,13 @@ func (a *Agent) respondWhileTaskPausedLocked(c *conversation, u *userState, mess
 	return a.responseLocked(c, u, answer, nil, report), nil
 }
 
-func (a *Agent) completeLocked(ctx context.Context, model string, request []models.ChatMessage, planner bool) (models.ModelCompletion, error) {
+func (a *Agent) completeLocked(ctx context.Context, model string, request []models.ChatMessage, planner, toolTurn bool, latestUserMessage string) (models.ModelCompletion, error) {
 	settings := a.settings
 	if planner {
 		settings.MaxTokens = plannerMaxTokens
+	}
+	if toolTurn {
+		return a.completeWithToolsLocked(ctx, model, request, settings, latestUserMessage)
 	}
 	if model == models.DeepSeekFlashModel {
 		return a.client.CompleteMessages(ctx, request, settings)
@@ -367,6 +388,209 @@ func (a *Agent) completeLocked(ctx context.Context, model string, request []mode
 		return models.ModelCompletion{}, errors.New("Выбранная модель недоступна для этого клиента.")
 	}
 	return client.CompleteMessagesModel(ctx, model, request, settings)
+}
+
+func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, request []models.ChatMessage, settings models.GenerationSettings, latestUserMessage string) (models.ModelCompletion, error) {
+	client, ok := a.client.(toolCompleter)
+	if !ok || a.tools == nil {
+		return models.ModelCompletion{}, errors.New("Выбранный клиент не поддерживает MCP tool calling.")
+	}
+	tools, err := a.tools.ToolsForModel(ctx)
+	if err != nil {
+		return models.ModelCompletion{}, err
+	}
+	listResult, listIsError, listErr := a.tools.CallForModel(ctx, "list_desktop_videos", map[string]any{})
+	if listErr != nil {
+		return models.ModelCompletion{}, fmt.Errorf("получить список видео через MCP: %w", listErr)
+	}
+	if listIsError {
+		return models.ModelCompletion{}, errors.New("MCP не смог получить список видео: " + listResult)
+	}
+	availableVideos := videoNamesFromToolResult(listResult)
+	executions := []models.ToolExecution{{Name: "list_desktop_videos", Arguments: map[string]any{}, Result: listResult}}
+	messages := append([]models.ChatMessage(nil), request...)
+	toolContext := toolSystemPrompt + "\n\nАвторитетный результат MCP list_desktop_videos:\n" + listResult
+	if len(messages) > 0 && messages[0].Role == "system" {
+		withTools := make([]models.ChatMessage, 0, len(messages)+1)
+		withTools = append(withTools, messages[0], models.ChatMessage{Role: "system", Content: toolContext})
+		messages = append(withTools, messages[1:]...)
+	} else {
+		messages = append([]models.ChatMessage{{Role: "system", Content: toolContext}}, messages...)
+	}
+	var total models.ModelUsage
+	for round := 0; round < 6; round++ {
+		completion, callErr := client.CompleteMessagesModelWithTools(ctx, model, messages, settings, tools)
+		if callErr != nil {
+			return models.ModelCompletion{}, callErr
+		}
+		total = addUsage(total, completion.Usage)
+		if len(completion.ToolCalls) == 0 {
+			completion.Usage = total
+			completion.ToolExecutions = executions
+			completion.Answer = groundedUploadAnswer(completion.Answer, executions, explicitUploadConfirmation(latestUserMessage))
+			return completion, nil
+		}
+		messages = append(messages, models.ChatMessage{Role: "assistant", Content: completion.Answer, ToolCalls: completion.ToolCalls})
+		for _, call := range completion.ToolCalls {
+			arguments := make(map[string]any)
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil {
+				content := `{"isError":true,"error":"Некорректный JSON аргументов инструмента."}`
+				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Result: content, IsError: true})
+				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
+				continue
+			}
+			if call.Function.Name == "upload_video_to_yandex" && !availableVideos[fmt.Sprint(arguments["videoName"])] {
+				payload, _ := json.Marshal(map[string]any{
+					"isError": true, "error": "video_not_in_latest_list",
+					"message":             "Имя файла отсутствует в свежем результате list_desktop_videos. Используй одно из доступных имён буквально.",
+					"availableVideoNames": mapKeys(availableVideos),
+				})
+				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
+				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
+				continue
+			}
+			if call.Function.Name == "upload_video_to_yandex" && !explicitUploadConfirmation(latestUserMessage) {
+				arguments["confirm"] = false
+				payload, _ := json.Marshal(map[string]any{
+					"isError": true, "error": "confirmation_required",
+					"message":            "Загрузка не выполнена. Попроси пользователя явно подтвердить загрузку выбранного файла в указанную папку.",
+					"requestedArguments": arguments,
+				})
+				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
+				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
+				continue
+			}
+			if call.Function.Name == "upload_video_to_yandex" {
+				arguments["confirm"] = true
+			}
+			content, isError, toolErr := a.tools.CallForModel(ctx, call.Function.Name, arguments)
+			if toolErr != nil {
+				content = toolErr.Error()
+				isError = true
+			}
+			if isError {
+				encoded, _ := json.Marshal(map[string]any{"isError": true, "error": content})
+				content = string(encoded)
+			}
+			executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: content, IsError: isError})
+			if call.Function.Name == "upload_video_to_yandex" && !isError {
+				return models.ModelCompletion{
+					Answer: groundedUploadAnswer("", executions, true), FinishReason: "tool_success",
+					Usage: total, ToolExecutions: executions,
+				}, nil
+			}
+			if call.Function.Name == "list_desktop_videos" && !isError {
+				availableVideos = videoNamesFromToolResult(content)
+			}
+			messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
+		}
+	}
+	return models.ModelCompletion{}, errors.New("Агент превысил лимит последовательных MCP-вызовов.")
+}
+
+func videoNamesFromToolResult(content string) map[string]bool {
+	var decoded struct {
+		Videos []struct {
+			Name string `json:"name"`
+		} `json:"videos"`
+	}
+	result := make(map[string]bool)
+	if json.Unmarshal([]byte(content), &decoded) == nil {
+		for _, video := range decoded.Videos {
+			if video.Name != "" {
+				result[video.Name] = true
+			}
+		}
+	}
+	return result
+}
+
+func mapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func addUsage(left, right models.ModelUsage) models.ModelUsage {
+	return models.ModelUsage{
+		InputTokens: left.InputTokens + right.InputTokens, OutputTokens: left.OutputTokens + right.OutputTokens,
+		TotalTokens: left.TotalTokens + right.TotalTokens, CacheHitTokens: left.CacheHitTokens + right.CacheHitTokens,
+		CacheMissTokens: left.CacheMissTokens + right.CacheMissTokens,
+	}
+}
+
+func toolIntent(message string) bool {
+	message = strings.ToLower(message)
+	action := strings.Contains(message, "загруз") || strings.Contains(message, "закин") || strings.Contains(message, "отправ") || strings.Contains(message, "полож") || strings.Contains(message, "сохран")
+	video := strings.Contains(message, "видео") || strings.Contains(message, "ролик") || strings.Contains(message, "запис") || strings.Contains(message, ".mov") || strings.Contains(message, ".mp4")
+	destination := strings.Contains(message, "яндекс") || strings.Contains(message, "диск")
+	desktop := strings.Contains(message, "рабоч") || strings.Contains(message, "desktop")
+	discovery := strings.Contains(message, "найд") || strings.Contains(message, "покаж") || strings.Contains(message, "посмотр") || strings.Contains(message, "какие") || strings.Contains(message, "список") || strings.Contains(message, "есть") || strings.Contains(message, "лежит")
+	analysis := strings.Contains(message, "анализ") || strings.Contains(message, "проанализ") || strings.Contains(message, "длитель") || strings.Contains(message, "кодек") || strings.Contains(message, "разрешен") || strings.Contains(message, "размер") || strings.Contains(message, "fps") || strings.Contains(message, "кадр") || strings.Contains(message, "метадан")
+	quota := strings.Contains(message, "помест") || strings.Contains(message, "свобод") || strings.Contains(message, "места") || strings.Contains(message, "квот") || strings.Contains(message, "сколько займ")
+	strongMetadata := strings.Contains(message, "длитель") || strings.Contains(message, "кодек") || strings.Contains(message, "разрешен") || strings.Contains(message, "fps") || strings.Contains(message, "метадан")
+	return (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
+}
+
+func toolFollowupIntent(message string, previous []models.ChatMessage) bool {
+	if len(previous) == 0 || previous[len(previous)-1].Role != "assistant" {
+		return false
+	}
+	context := strings.ToLower(previous[len(previous)-1].Content)
+	videoContext := strings.Contains(context, "видео") || strings.Contains(context, "загруз") || strings.Contains(context, "яндекс") || strings.Contains(context, ".mov") || strings.Contains(context, ".mp4") || strings.Contains(context, ".mkv") || strings.Contains(context, ".webm")
+	if !videoContext {
+		return false
+	}
+	message = strings.ToLower(message)
+	return strings.Contains(message, "анализ") || strings.Contains(message, "проанализ") || strings.Contains(message, "размер") || strings.Contains(message, "мест") || strings.Contains(message, "помест") || strings.Contains(message, "длитель") || strings.Contains(message, "кодек") || strings.Contains(message, "разрешен") || strings.Contains(message, "fps") || strings.Contains(message, "метадан") || strings.Contains(message, "попроб") || strings.Contains(message, "повтор") || strings.Contains(message, "ещё раз") || strings.Contains(message, "еще раз") || strings.Contains(message, "создал папк")
+}
+
+func awaitingToolConfirmation(messages []models.ChatMessage) bool {
+	if len(messages) == 0 || messages[len(messages)-1].Role != "assistant" {
+		return false
+	}
+	text := strings.ToLower(messages[len(messages)-1].Content)
+	return strings.Contains(text, "подтверд") && (strings.Contains(text, "загруз") || strings.Contains(text, "яндекс"))
+}
+
+func explicitUploadConfirmation(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	if message == "да" || message == "ок" || message == "подтверждаю" || message == "загружай" || message == "закидывай" {
+		return true
+	}
+	return (strings.Contains(message, "подтверждаю") && strings.Contains(message, "загруж")) || strings.Contains(message, "да, загруж") || strings.Contains(message, "да загруж") || strings.Contains(message, "можно загруж") || strings.Contains(message, "повтори загруз") || strings.Contains(message, "попробуй ещё раз") || strings.Contains(message, "попробуй еще раз") || (strings.Contains(message, "создал папк") && strings.Contains(message, "попроб"))
+}
+
+func groundedUploadAnswer(modelAnswer string, executions []models.ToolExecution, confirmationGiven bool) string {
+	var lastUpload *models.ToolExecution
+	for i := range executions {
+		if executions[i].Name == "upload_video_to_yandex" {
+			lastUpload = &executions[i]
+		}
+	}
+	if lastUpload == nil {
+		if confirmationGiven {
+			return "Загрузка не выполнена: агент не вызвал MCP-инструмент upload_video_to_yandex. Повторите команду загрузки с названием папки."
+		}
+		return modelAnswer
+	}
+	if lastUpload.IsError {
+		if strings.Contains(lastUpload.Result, "confirmation_required") {
+			return modelAnswer
+		}
+		return "Загрузка не выполнена. MCP вернул ошибку Яндекс Диска: " + lastUpload.Result
+	}
+	var result struct {
+		DiskPath  string `json:"diskPath"`
+		SizeBytes int64  `json:"sizeBytes"`
+	}
+	if json.Unmarshal([]byte(lastUpload.Result), &result) == nil && result.DiskPath != "" {
+		return fmt.Sprintf("Готово: видео действительно загружено через MCP в `%s` (%d байт).", result.DiskPath, result.SizeBytes)
+	}
+	return "Готово: Яндекс Диск подтвердил успешную загрузку через MCP."
 }
 
 func (a *Agent) configureLocked(c *conversation, recent int, strategy models.ContextStrategy, model string) error {
@@ -427,11 +651,15 @@ func normalizeModel(model string) string {
 	return models.DeepSeekFlashModel
 }
 func (a *Agent) requestMessagesLocked(c *conversation, u *userState) []models.ChatMessage {
+	return a.requestMessagesForModeLocked(c, u, plannerEnabled(c))
+}
+
+func (a *Agent) requestMessagesForModeLocked(c *conversation, u *userState, planner bool) []models.ChatMessage {
 	request := []models.ChatMessage{{Role: "system", Content: a.system}}
 	if invariantsPrompt := formatInvariants(c.task, u.globalInvariants); invariantsPrompt != "" {
 		request = append(request, models.ChatMessage{Role: "system", Content: invariantsPrompt})
 	}
-	if taskPrompt := formatTaskState(c.task); plannerEnabled(c) && taskPrompt != "" {
+	if taskPrompt := formatTaskState(c.task); planner && taskPrompt != "" {
 		request = append(request, models.ChatMessage{Role: "system", Content: taskPrompt})
 		request = append(request, models.ChatMessage{Role: "system", Content: projectPlannerPrompt})
 	}

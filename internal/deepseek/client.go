@@ -49,14 +49,16 @@ func newClient(apiKey string, httpClient *http.Client, baseURL string) *Client {
 func ModelName() string { return model }
 
 type completionRequest struct {
-	Model          string               `json:"model"`
-	Messages       []models.ChatMessage `json:"messages"`
-	Thinking       thinking             `json:"thinking"`
-	Temperature    *float64             `json:"temperature,omitempty"`
-	TopP           *float64             `json:"top_p,omitempty"`
-	MaxTokens      int                  `json:"max_tokens"`
-	ResponseFormat *responseFormat      `json:"response_format,omitempty"`
-	Stop           []string             `json:"stop,omitempty"`
+	Model          string                  `json:"model"`
+	Messages       []models.ChatMessage    `json:"messages"`
+	Thinking       thinking                `json:"thinking"`
+	Temperature    *float64                `json:"temperature,omitempty"`
+	TopP           *float64                `json:"top_p,omitempty"`
+	MaxTokens      int                     `json:"max_tokens"`
+	ResponseFormat *responseFormat         `json:"response_format,omitempty"`
+	Stop           []string                `json:"stop,omitempty"`
+	Tools          []models.ToolDefinition `json:"tools,omitempty"`
+	ToolChoice     string                  `json:"tool_choice,omitempty"`
 }
 
 type responseFormat struct {
@@ -105,7 +107,7 @@ func (c *Client) CompleteMessages(ctx context.Context, messages []models.ChatMes
 	if c.apiKey == "" {
 		return Completion{}, ErrNoAPIKey
 	}
-	return c.completeMessages(ctx, model, messages, settings, nil, nil, settings.MaxTokens)
+	return c.completeMessages(ctx, model, messages, settings, nil, nil, settings.MaxTokens, nil)
 }
 
 // CompleteMessagesModel is used when the user explicitly selects a model
@@ -114,7 +116,16 @@ func (c *Client) CompleteMessagesModel(ctx context.Context, modelName string, me
 	if c.apiKey == "" {
 		return Completion{}, ErrNoAPIKey
 	}
-	return c.completeMessages(ctx, strings.TrimSpace(modelName), messages, settings, nil, nil, settings.MaxTokens)
+	return c.completeMessages(ctx, strings.TrimSpace(modelName), messages, settings, nil, nil, settings.MaxTokens, nil)
+}
+
+// CompleteMessagesModelWithTools exposes OpenAI-compatible function calling
+// to the application agent. Tool execution remains server-side.
+func (c *Client) CompleteMessagesModelWithTools(ctx context.Context, modelName string, messages []models.ChatMessage, settings models.GenerationSettings, tools []models.ToolDefinition) (Completion, error) {
+	if c.apiKey == "" {
+		return Completion{}, ErrNoAPIKey
+	}
+	return c.completeMessages(ctx, strings.TrimSpace(modelName), messages, settings, nil, nil, settings.MaxTokens, tools)
 }
 
 // CompleteModel runs a named catalog model with the same system instruction and
@@ -186,10 +197,10 @@ func (c *Client) completeModel(ctx context.Context, modelName, system, prompt st
 	return c.completeMessages(ctx, modelName, []models.ChatMessage{
 		{Role: "system", Content: system},
 		{Role: "user", Content: prompt},
-	}, settings, responseFormat, stop, maxTokens)
+	}, settings, responseFormat, stop, maxTokens, nil)
 }
 
-func (c *Client) completeMessages(ctx context.Context, modelName string, messages []models.ChatMessage, settings models.GenerationSettings, responseFormat *responseFormat, stop []string, maxTokens int) (Completion, error) {
+func (c *Client) completeMessages(ctx context.Context, modelName string, messages []models.ChatMessage, settings models.GenerationSettings, responseFormat *responseFormat, stop []string, maxTokens int, tools []models.ToolDefinition) (Completion, error) {
 
 	body, err := json.Marshal(completionRequest{
 		Model:          modelName,
@@ -200,6 +211,8 @@ func (c *Client) completeMessages(ctx context.Context, modelName string, message
 		MaxTokens:      maxTokens,
 		ResponseFormat: responseFormat,
 		Stop:           stop,
+		Tools:          tools,
+		ToolChoice:     toolChoice(tools),
 	})
 	if err != nil {
 		return Completion{}, fmt.Errorf("encode request: %w", err)
@@ -235,14 +248,21 @@ func (c *Client) completeMessages(ctx context.Context, modelName string, message
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&decoded); err != nil {
 		return Completion{}, ErrUpstream
 	}
-	if len(decoded.Choices) == 0 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
+	if len(decoded.Choices) == 0 || (strings.TrimSpace(decoded.Choices[0].Message.Content) == "" && len(decoded.Choices[0].Message.ToolCalls) == 0) {
 		return Completion{}, ErrUpstream
 	}
 	answer := strings.TrimSpace(strings.ReplaceAll(decoded.Choices[0].Message.Content, models.StopSequence, ""))
 	return Completion{Answer: answer, FinishReason: decoded.Choices[0].FinishReason, Usage: models.ModelUsage{
 		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens, TotalTokens: decoded.Usage.TotalTokens,
 		CacheHitTokens: decoded.Usage.PromptCacheHitTokens, CacheMissTokens: decoded.Usage.PromptCacheMissTokens,
-	}}, nil
+	}, ToolCalls: decoded.Choices[0].Message.ToolCalls}, nil
+}
+
+func toolChoice(tools []models.ToolDefinition) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	return "auto"
 }
 
 func requestControls(mode models.ResponseMode, selectedMaxTokens int) (string, *responseFormat, []string, int) {
