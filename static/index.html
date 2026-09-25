@@ -143,12 +143,36 @@
           </dialog>
         </section>
 
+        <section class="mcp-panel" aria-labelledby="mcp-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow mcp-eyebrow">День 16 · MCP</p>
+              <h2 id="mcp-title">Яндекс Диск: архив видео</h2>
+            </div>
+            <span id="mcp-status" class="mcp-status">Подключение…</span>
+          </div>
+          <p class="hint">Пишите естественно: «Какие видео есть на Рабочем столе?», «Проанализируй последнее видео», «Поместится ли оно на Яндекс Диск?» или «Загрузи последнее видео в папку lession 16». Агент сам выберет MCP-инструменты и перед внешней записью попросит подтверждение.</p>
+
+          <div class="mcp-grid">
+            <div class="mcp-tools-card">
+              <div class="section-heading">
+                <h3>Доступные инструменты</h3>
+                <button id="mcp-refresh" class="secondary-button compact-button" type="button">tools/list</button>
+              </div>
+              <div id="mcp-tools" class="mcp-tools" aria-live="polite"></div>
+              <p id="mcp-token-note" class="hint"></p>
+              <p id="mcp-source-note" class="hint"></p>
+              <pre id="mcp-result" class="mcp-result">Нажмите tools/list, чтобы обновить журнал.</pre>
+            </div>
+          </div>
+        </section>
+
         <details class="logs-card">
           <summary>Логи</summary>
           <pre id="request-log">Отправьте сообщение, чтобы увидеть журнал запроса.</pre>
         </details>
       </section>
     </main>
-    <script src="app.js?v=project-dashboard-7"></script>
+    <script src="app.js?v=mcp-yandex-disk-2"></script>
   </body>
 </html>

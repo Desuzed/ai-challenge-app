@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"ai-challenge-app/internal/agent"
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/handlers"
+	"ai-challenge-app/internal/mcpbridge"
 	"ai-challenge-app/internal/openrouter"
 )
 
@@ -46,6 +48,24 @@ func main() {
 	}
 	handler.SetAgent(persistentAgent)
 	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
+	homeDirectory, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("find home directory: %v", err)
+	}
+	videoDirectory := localSetting("VIDEO_SOURCE_DIR", os.Getenv, os.ReadFile)
+	if videoDirectory == "" {
+		videoDirectory = filepath.Join(homeDirectory, "Desktop")
+	}
+	mcpBridge, err := mcpbridge.New(context.Background(), mcpbridge.Config{
+		OAuthToken: localSetting("YANDEX_DISK_OAUTH_TOKEN", os.Getenv, os.ReadFile),
+		RootFolder: localSetting("YANDEX_DISK_ROOT", os.Getenv, os.ReadFile),
+		VideoDir:   videoDirectory,
+	})
+	if err != nil {
+		log.Fatalf("connect Yandex MCP: %v", err)
+	}
+	defer mcpBridge.Close()
+	persistentAgent.SetToolRuntime(mcpBridge)
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
 	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))
 	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
@@ -54,6 +74,8 @@ func main() {
 	mux.Handle("/api/agent/token-demo", http.HandlerFunc(handler.TokenDemo))
 	mux.Handle("/api/agent/strategy-demo", http.HandlerFunc(handler.ContextStrategyDemo))
 	mux.Handle("/api/agent/branching-demo", http.HandlerFunc(handler.BranchingDemo))
+	mux.Handle("/api/mcp/tools", http.HandlerFunc(mcpBridge.ToolsHTTP))
+	mux.Handle("/api/mcp/call", http.HandlerFunc(mcpBridge.CallHTTP))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
@@ -63,7 +85,7 @@ func main() {
 		// The prompt-designer mode makes two sequential API calls and can take
 		// longer than the single-response lessons.
 		// Lesson 5 can make two slower model calls in sequence (Flash and Pro).
-		WriteTimeout: 250 * time.Second,
+		WriteTimeout: 30 * time.Minute,
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -87,6 +109,21 @@ func loadDeepSeekAPIKey(lookupEnv func(string) string, readFile func(string) ([]
 }
 
 func deepSeekAPIKeyFromEnv(data []byte) string {
+	return valueFromEnvFile(data, apiKeyEnvVar)
+}
+
+func localSetting(name string, lookupEnv func(string) string, readFile func(string) ([]byte, error)) string {
+	if value := strings.TrimSpace(lookupEnv(name)); value != "" {
+		return value
+	}
+	data, err := readFile(localEnvFile)
+	if err != nil {
+		return ""
+	}
+	return valueFromEnvFile(data, name)
+}
+
+func valueFromEnvFile(data []byte, wanted string) string {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -94,7 +131,7 @@ func deepSeekAPIKeyFromEnv(data []byte) string {
 		}
 
 		name, value, ok := strings.Cut(line, "=")
-		if ok && strings.TrimSpace(name) == apiKeyEnvVar {
+		if ok && strings.TrimSpace(name) == wanted {
 			return strings.TrimSpace(value)
 		}
 	}

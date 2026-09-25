@@ -41,6 +41,12 @@ const invariantForm = document.querySelector('#invariant-form');
 const invariantScope = document.querySelector('#invariant-scope');
 const invariantRule = document.querySelector('#invariant-rule');
 const invariantLayers = document.querySelector('#invariant-layers');
+const mcpStatus = document.querySelector('#mcp-status');
+const mcpRefresh = document.querySelector('#mcp-refresh');
+const mcpTools = document.querySelector('#mcp-tools');
+const mcpTokenNote = document.querySelector('#mcp-token-note');
+const mcpSourceNote = document.querySelector('#mcp-source-note');
+const mcpResult = document.querySelector('#mcp-result');
 
 let selectedAgentModel = 'deepseek-flash';
 let activeTask = {};
@@ -69,6 +75,57 @@ function modelLabel(model) {
   if (model === 'deepseek-v4-pro') return 'DeepSeek V4 Pro';
   return model;
 }
+
+async function readJSONResponse(response, operation) {
+  const body = await response.text();
+  try { return JSON.parse(body); } catch (_) {
+    if (response.status === 404 || /^404\s+page not found/i.test(body.trim())) {
+      throw new Error(`${operation}: backend запущен со старым кодом. Остановите его, снова выполните \`go run .\` и обновите страницу.`);
+    }
+    throw new Error(`${operation}: сервер вернул не JSON (HTTP ${response.status}): ${body.trim().slice(0, 180) || 'пустой ответ'}`);
+  }
+}
+
+async function loadMCP(event) {
+  mcpRefresh.disabled = true;
+  const manualRefresh = event?.type === 'click';
+  if (manualRefresh) {
+    mcpStatus.textContent = 'Выполняю tools/list…';
+    mcpStatus.className = 'mcp-status';
+    mcpResult.textContent = 'GET /api/mcp/tools → ожидание ответа…';
+  }
+  try {
+    const response = await fetch('/api/mcp/tools', { cache: 'no-store' });
+    const payload = await readJSONResponse(response, 'tools/list');
+    if (!response.ok) throw new Error(payload.error || 'MCP-соединение не установлено.');
+    mcpStatus.textContent = payload.configured ? `Подключено · ${payload.rootFolder}` : 'MCP подключён · нужен OAuth-токен Диска';
+    mcpStatus.className = `mcp-status${payload.connected ? ' connected' : ''}`;
+    mcpTools.replaceChildren();
+    payload.tools.forEach((tool) => {
+      const item = document.createElement('article'); item.className = 'mcp-tool';
+      const name = document.createElement('strong'); name.textContent = tool.name;
+      const description = document.createElement('span'); description.textContent = tool.description;
+      item.append(name, description); mcpTools.append(item);
+    });
+    const refreshedAt = new Date().toLocaleTimeString('ru-RU');
+    mcpTokenNote.textContent = `tools/list выполнен в ${refreshedAt}. Получено инструментов: ${payload.tools.length}. Схемы ≈ ${payload.estimatedDefinitionTokens} токенов, модель использовала ${payload.modelTokensUsedByThisRequest}.`;
+    mcpSourceNote.textContent = `Папка поиска видео: ${payload.videoDirectory}`;
+    mcpResult.textContent = prettyJSON({
+      request: 'GET /api/mcp/tools',
+      protocolMethod: 'tools/list',
+      connected: payload.connected,
+      server: payload.server,
+      configured: payload.configured,
+      toolNames: payload.tools.map((tool) => tool.name),
+      receivedAt: refreshedAt,
+    });
+  } catch (error) {
+    mcpStatus.textContent = 'Ошибка MCP'; mcpStatus.className = 'mcp-status error';
+    mcpResult.textContent = readableFetchError(error, 'Не удалось подключить MCP.');
+  } finally { mcpRefresh.disabled = false; }
+}
+
+mcpRefresh.addEventListener('click', loadMCP);
 
 function renderAgentHistory(messages) {
   agentHistory.replaceChildren();
@@ -531,6 +588,7 @@ agentForm.addEventListener('submit', async (event) => {
       taskState: payload.task,
       modelCallSkipped: payload.task?.status === 'paused',
       contextSentToModel: payload.requestMessages,
+      mcpToolExecutions: payload.toolExecutions || [],
     })}`;
     if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ агента.');
     requestLog.textContent += `\n\nОТВЕТ АГЕНТА\n${payload.answer}`;
@@ -554,3 +612,4 @@ clearAgentHistory.addEventListener('click', async () => {
 renderTask({});
 loadAgentHistory();
 loadAgentModels();
+loadMCP();
