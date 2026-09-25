@@ -146,23 +146,23 @@
         <section class="mcp-panel" aria-labelledby="mcp-title">
           <div class="section-heading">
             <div>
-              <p class="eyebrow mcp-eyebrow">День 16 · MCP</p>
-              <h2 id="mcp-title">Яндекс Диск: архив видео</h2>
+              <p class="eyebrow mcp-eyebrow">Интеграции агента</p>
+              <h2 id="mcp-title">Подключённые MCP-инструменты</h2>
             </div>
             <span id="mcp-status" class="mcp-status">Подключение…</span>
           </div>
-          <p class="hint">Пишите естественно: «Какие видео есть на Рабочем столе?», «Проанализируй последнее видео», «Поместится ли оно на Яндекс Диск?» или «Загрузи последнее видео в папку lession 16». Агент сам выберет MCP-инструменты и перед внешней записью попросит подтверждение.</p>
+          <p class="hint">Агент получает живой список инструментов при запуске. Яндекс Диск сохранён, а GitHub умеет читать репозиторий и файлы, просматривать issues и создавать или обновлять текст после явного подтверждения.</p>
 
           <div class="mcp-grid">
             <div class="mcp-tools-card">
               <div class="section-heading">
-                <h3>Доступные инструменты</h3>
+                <h3>Серверы и доступные инструменты</h3>
                 <button id="mcp-refresh" class="secondary-button compact-button" type="button">tools/list</button>
               </div>
+              <div id="mcp-servers" class="mcp-servers" aria-live="polite"></div>
               <div id="mcp-tools" class="mcp-tools" aria-live="polite"></div>
               <p id="mcp-token-note" class="hint"></p>
-              <p id="mcp-source-note" class="hint"></p>
-              <pre id="mcp-result" class="mcp-result">Нажмите tools/list, чтобы обновить журнал.</pre>
+              <pre id="mcp-result" class="mcp-result">Журнал MCP появится после tools/list.</pre>
             </div>
           </div>
         </section>
@@ -173,6 +173,6 @@
         </details>
       </section>
     </main>
-    <script src="app.js?v=mcp-yandex-disk-2"></script>
+    <script src="app.js?v=mcp-github-1"></script>
   </body>
 </html>

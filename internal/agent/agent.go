@@ -32,7 +32,7 @@ const projectPlannerPrompt = `Ты агент-проектировщик. Не �
 Этапами и переходами управляет сервер, а не ты. Всегда возвращай phase текущего состояния, но НИКОГДА не меняй его в ответе: можешь только подготовить результат текущего этапа и объяснить, какое явное действие ожидается от пользователя. Не перепрыгивай через этапы. Если пользователь просит вернуться к доработке, опиши нужную доработку, но не меняй phase. В КАЖДОМ ответе возвращай полный актуальный набор openQuestions, decisions и nextSteps, а не только изменения. Если пользователь утвердил план или решил вопрос, убери закрытые пункты из openQuestions, добавь решение в decisions и обнови currentStep, expectedAction и nextSteps для следующего осмысленного действия. Никогда не оставляй в тексте ТЗ или ожидаемом действии название прошлого этапа.
 
 artifactTitle и artifactContent заполняй автоматически, когда агент перешёл на последний этап и все пункты плана закрыты: нет openQuestions, а текущий шаг завершён. artifactContent — отдельный, самодостаточный Markdown-документ, а не ответ в чате: включи цель, границы, роли и сценарии, функциональные и нефункциональные требования, данные и интеграции, принятые решения, риски, критерии приёмки. Не включай код и не реализуй приложение. До финального этапа не возвращай эти поля, чтобы не перезаписать ранее сформированный артефакт.`
-const toolSystemPrompt = `У тебя есть MCP-инструменты для работы с видео и Яндекс Диском. Сервер добавляет в контекст авторитетный свежий результат list_desktop_videos. Используй имя файла из него БУКВАЛЬНО и никогда не придумывай имена. Для списка и поиска отвечай по этому результату. Для длительности, кодеков, разрешения и FPS вызови analyze_desktop_video. Для размера, свободного места и проверки, поместится ли файл на Диск, вызови estimate_video_upload. Папка назначения должна быть взята из сообщения пользователя; если она не указана, задай короткий уточняющий вопрос. Для загрузки вызови upload_video_to_yandex. Загрузка является внешней записью: если результат инструмента сообщает confirmation_required, назови выбранный реальный файл и путь назначения и попроси явное подтверждение. После подтверждения пользователя продолжи вызов upload_video_to_yandex. Никогда не утверждай, что файл проанализирован, проверен или загружен, пока соответствующий инструмент не вернул успешный результат.`
+const toolSystemPrompt = `У тебя есть MCP-инструменты для Яндекс Диска и GitHub. Сервер добавляет в контекст авторитетный свежий результат list_desktop_videos. Используй имя файла из него БУКВАЛЬНО и никогда не придумывай имена. Для списка и поиска отвечай по этому результату. Для длительности, кодеков, разрешения и FPS вызови analyze_desktop_video. Для размера, свободного места и проверки, поместится ли файл на Диск, вызови estimate_video_upload. Папка назначения должна быть взята из сообщения пользователя; если она не указана, задай короткий уточняющий вопрос. Для загрузки вызови upload_video_to_yandex. Для GitHub используй github_get_repository для общих сведений, github_list_files для вопроса о составе репозитория, github_get_file для содержимого и github_list_issues для задач. github_put_file и github_delete_file — внешние операции: перед ними назови файл, ветку и сообщение коммита и запроси явное подтверждение. Никогда не утверждай, что файл проанализирован, проверен, загружен, изменён или удалён, пока соответствующий инструмент не вернул успешный результат.`
 const defaultRecentMessages = 10
 const minRecentMessages = 2
 const maxRecentMessages = 40
@@ -427,7 +427,11 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 		if len(completion.ToolCalls) == 0 {
 			completion.Usage = total
 			completion.ToolExecutions = executions
-			completion.Answer = groundedUploadAnswer(completion.Answer, executions, explicitUploadConfirmation(latestUserMessage))
+			completion.Answer = groundedGitHubWriteAnswer(
+				groundedUploadAnswer(completion.Answer, executions, explicitUploadConfirmation(latestUserMessage)),
+				executions,
+				explicitGitHubConfirmation(latestUserMessage),
+			)
 			return completion, nil
 		}
 		messages = append(messages, models.ChatMessage{Role: "assistant", Content: completion.Answer, ToolCalls: completion.ToolCalls})
@@ -463,6 +467,19 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 			if call.Function.Name == "upload_video_to_yandex" {
 				arguments["confirm"] = true
 			}
+			if (call.Function.Name == "github_put_file" || call.Function.Name == "github_delete_file") && !explicitGitHubConfirmation(latestUserMessage) {
+				arguments["confirm"] = false
+				payload, _ := json.Marshal(map[string]any{
+					"isError": true, "error": "confirmation_required",
+					"message": "Запись в GitHub не выполнена. Назови файл, ветку и коммит, затем попроси явное подтверждение пользователя.",
+				})
+				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
+				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
+				continue
+			}
+			if call.Function.Name == "github_put_file" || call.Function.Name == "github_delete_file" {
+				arguments["confirm"] = true
+			}
 			content, isError, toolErr := a.tools.CallForModel(ctx, call.Function.Name, arguments)
 			if toolErr != nil {
 				content = toolErr.Error()
@@ -477,6 +494,13 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 				return models.ModelCompletion{
 					Answer: groundedUploadAnswer("", executions, true), FinishReason: "tool_success",
 					Usage: total, ToolExecutions: executions,
+				}, nil
+			}
+			if (call.Function.Name == "github_put_file" || call.Function.Name == "github_delete_file") && !isError {
+				return models.ModelCompletion{
+					Answer:       groundedGitHubWriteAnswer("", executions, true),
+					FinishReason: "tool_success",
+					Usage:        total, ToolExecutions: executions,
 				}, nil
 			}
 			if call.Function.Name == "list_desktop_videos" && !isError {
@@ -532,7 +556,8 @@ func toolIntent(message string) bool {
 	analysis := strings.Contains(message, "анализ") || strings.Contains(message, "проанализ") || strings.Contains(message, "длитель") || strings.Contains(message, "кодек") || strings.Contains(message, "разрешен") || strings.Contains(message, "размер") || strings.Contains(message, "fps") || strings.Contains(message, "кадр") || strings.Contains(message, "метадан")
 	quota := strings.Contains(message, "помест") || strings.Contains(message, "свобод") || strings.Contains(message, "места") || strings.Contains(message, "квот") || strings.Contains(message, "сколько займ")
 	strongMetadata := strings.Contains(message, "длитель") || strings.Contains(message, "кодек") || strings.Contains(message, "разрешен") || strings.Contains(message, "fps") || strings.Contains(message, "метадан")
-	return (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
+	github := strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "гитаб") || strings.Contains(message, "репозитор") || strings.Contains(message, "issue") || strings.Contains(message, "иссу") || strings.Contains(message, "pull request") || strings.Contains(message, "пулл")
+	return github || (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
 }
 
 func toolFollowupIntent(message string, previous []models.ChatMessage) bool {
@@ -553,7 +578,10 @@ func awaitingToolConfirmation(messages []models.ChatMessage) bool {
 		return false
 	}
 	text := strings.ToLower(messages[len(messages)-1].Content)
-	return strings.Contains(text, "подтверд") && (strings.Contains(text, "загруз") || strings.Contains(text, "яндекс"))
+	if !strings.Contains(text, "подтверд") {
+		return false
+	}
+	return strings.Contains(text, "загруз") || strings.Contains(text, "яндекс") || strings.Contains(text, "github") || strings.Contains(text, "гитхаб") || strings.Contains(text, "коммит")
 }
 
 func explicitUploadConfirmation(message string) bool {
@@ -562,6 +590,11 @@ func explicitUploadConfirmation(message string) bool {
 		return true
 	}
 	return (strings.Contains(message, "подтверждаю") && strings.Contains(message, "загруж")) || strings.Contains(message, "да, загруж") || strings.Contains(message, "да загруж") || strings.Contains(message, "можно загруж") || strings.Contains(message, "повтори загруз") || strings.Contains(message, "попробуй ещё раз") || strings.Contains(message, "попробуй еще раз") || (strings.Contains(message, "создал папк") && strings.Contains(message, "попроб"))
+}
+
+func explicitGitHubConfirmation(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return message == "да" || message == "ок" || message == "подтверждаю" || (strings.Contains(message, "подтверждаю") && (strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "коммит") || strings.Contains(message, "файл")))
 }
 
 func groundedUploadAnswer(modelAnswer string, executions []models.ToolExecution, confirmationGiven bool) string {
@@ -591,6 +624,43 @@ func groundedUploadAnswer(modelAnswer string, executions []models.ToolExecution,
 		return fmt.Sprintf("Готово: видео действительно загружено через MCP в `%s` (%d байт).", result.DiskPath, result.SizeBytes)
 	}
 	return "Готово: Яндекс Диск подтвердил успешную загрузку через MCP."
+}
+
+// groundedGitHubWriteAnswer prevents a conversational model from reporting a
+// commit that the GitHub MCP tool did not confirm.
+func groundedGitHubWriteAnswer(modelAnswer string, executions []models.ToolExecution, confirmationGiven bool) string {
+	var lastWrite *models.ToolExecution
+	for i := range executions {
+		if executions[i].Name == "github_put_file" || executions[i].Name == "github_delete_file" {
+			lastWrite = &executions[i]
+		}
+	}
+	if lastWrite == nil {
+		if confirmationGiven {
+			return "Операция в GitHub не выполнена: агент не вызвал MCP-инструмент создания или удаления файла. Повторите команду."
+		}
+		return modelAnswer
+	}
+	if lastWrite.IsError {
+		if strings.Contains(lastWrite.Result, "confirmation_required") {
+			return modelAnswer
+		}
+		return "Изменение в GitHub не выполнено. MCP вернул ошибку: " + lastWrite.Result
+	}
+	var result struct {
+		Path      string `json:"path"`
+		Branch    string `json:"branch"`
+		CommitSHA string `json:"commitSha"`
+		URL       string `json:"url"`
+	}
+	if json.Unmarshal([]byte(lastWrite.Result), &result) == nil && result.CommitSHA != "" {
+		answer := fmt.Sprintf("Готово: GitHub подтвердил коммит `%s` для `%s` в ветке `%s`.", result.CommitSHA, result.Path, result.Branch)
+		if result.URL != "" {
+			answer += " Файл: " + result.URL
+		}
+		return answer
+	}
+	return "Изменение в GitHub не подтверждено: MCP не вернул SHA коммита."
 }
 
 func (a *Agent) configureLocked(c *conversation, recent int, strategy models.ContextStrategy, model string) error {

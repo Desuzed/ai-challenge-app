@@ -43,9 +43,9 @@ const invariantRule = document.querySelector('#invariant-rule');
 const invariantLayers = document.querySelector('#invariant-layers');
 const mcpStatus = document.querySelector('#mcp-status');
 const mcpRefresh = document.querySelector('#mcp-refresh');
+const mcpServers = document.querySelector('#mcp-servers');
 const mcpTools = document.querySelector('#mcp-tools');
 const mcpTokenNote = document.querySelector('#mcp-token-note');
-const mcpSourceNote = document.querySelector('#mcp-source-note');
 const mcpResult = document.querySelector('#mcp-result');
 
 let selectedAgentModel = 'deepseek-flash';
@@ -98,8 +98,16 @@ async function loadMCP(event) {
     const response = await fetch('/api/mcp/tools', { cache: 'no-store' });
     const payload = await readJSONResponse(response, 'tools/list');
     if (!response.ok) throw new Error(payload.error || 'MCP-соединение не установлено.');
-    mcpStatus.textContent = payload.configured ? `Подключено · ${payload.rootFolder}` : 'MCP подключён · нужен OAuth-токен Диска';
+    mcpStatus.textContent = payload.connected ? `Подключено · ${payload.servers.length} сервера` : 'MCP недоступен';
     mcpStatus.className = `mcp-status${payload.connected ? ' connected' : ''}`;
+    mcpServers.replaceChildren();
+    payload.servers.forEach((server) => {
+      const item = document.createElement('article'); item.className = 'mcp-server';
+      const name = document.createElement('strong'); name.textContent = server.name;
+      const detail = document.createElement('span');
+      detail.textContent = `${server.connected ? 'подключён' : 'недоступен'} · ${server.toolCount} инструментов · ${server.detail}${server.configured ? '' : ' · запись требует токен'}`;
+      item.append(name, detail); mcpServers.append(item);
+    });
     mcpTools.replaceChildren();
     payload.tools.forEach((tool) => {
       const item = document.createElement('article'); item.className = 'mcp-tool';
@@ -109,13 +117,11 @@ async function loadMCP(event) {
     });
     const refreshedAt = new Date().toLocaleTimeString('ru-RU');
     mcpTokenNote.textContent = `tools/list выполнен в ${refreshedAt}. Получено инструментов: ${payload.tools.length}. Схемы ≈ ${payload.estimatedDefinitionTokens} токенов, модель использовала ${payload.modelTokensUsedByThisRequest}.`;
-    mcpSourceNote.textContent = `Папка поиска видео: ${payload.videoDirectory}`;
     mcpResult.textContent = prettyJSON({
       request: 'GET /api/mcp/tools',
       protocolMethod: 'tools/list',
       connected: payload.connected,
-      server: payload.server,
-      configured: payload.configured,
+      servers: payload.servers,
       toolNames: payload.tools.map((tool) => tool.name),
       receivedAt: refreshedAt,
     });
