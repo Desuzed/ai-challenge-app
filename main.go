@@ -13,6 +13,7 @@ import (
 
 	"ai-challenge-app/internal/agent"
 	"ai-challenge-app/internal/deepseek"
+	"ai-challenge-app/internal/githubmcp"
 	"ai-challenge-app/internal/handlers"
 	"ai-challenge-app/internal/mcpbridge"
 	"ai-challenge-app/internal/openrouter"
@@ -56,7 +57,7 @@ func main() {
 	if videoDirectory == "" {
 		videoDirectory = filepath.Join(homeDirectory, "Desktop")
 	}
-	mcpBridge, err := mcpbridge.New(context.Background(), mcpbridge.Config{
+	yandexBridge, err := mcpbridge.New(context.Background(), mcpbridge.Config{
 		OAuthToken: localSetting("YANDEX_DISK_OAUTH_TOKEN", os.Getenv, os.ReadFile),
 		RootFolder: localSetting("YANDEX_DISK_ROOT", os.Getenv, os.ReadFile),
 		VideoDir:   videoDirectory,
@@ -64,8 +65,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("connect Yandex MCP: %v", err)
 	}
-	defer mcpBridge.Close()
-	persistentAgent.SetToolRuntime(mcpBridge)
+	githubRepository := localSetting("GITHUB_REPOSITORY", os.Getenv, os.ReadFile)
+	if githubRepository == "" {
+		githubRepository = "Desuzed/ai-challenge-app"
+	}
+	githubBridge, err := githubmcp.New(context.Background(), githubmcp.Config{
+		Token: localSetting("GITHUB_TOKEN", os.Getenv, os.ReadFile), Repository: githubRepository,
+	})
+	if err != nil {
+		log.Fatalf("connect GitHub MCP: %v", err)
+	}
+	mcpCatalog := mcpbridge.NewCatalog(yandexBridge, githubBridge)
+	defer mcpCatalog.Close()
+	persistentAgent.SetToolRuntime(mcpCatalog)
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
 	mux.Handle("/api/reasoning", http.HandlerFunc(handler.Reasoning))
 	mux.Handle("/api/model-versions", http.HandlerFunc(handler.ModelVersions))
@@ -74,8 +86,8 @@ func main() {
 	mux.Handle("/api/agent/token-demo", http.HandlerFunc(handler.TokenDemo))
 	mux.Handle("/api/agent/strategy-demo", http.HandlerFunc(handler.ContextStrategyDemo))
 	mux.Handle("/api/agent/branching-demo", http.HandlerFunc(handler.BranchingDemo))
-	mux.Handle("/api/mcp/tools", http.HandlerFunc(mcpBridge.ToolsHTTP))
-	mux.Handle("/api/mcp/call", http.HandlerFunc(mcpBridge.CallHTTP))
+	mux.Handle("/api/mcp/tools", http.HandlerFunc(mcpCatalog.ToolsHTTP))
+	mux.Handle("/api/mcp/call", http.HandlerFunc(mcpCatalog.CallHTTP))
 
 	server := &http.Server{
 		Addr:              "127.0.0.1:" + port,
