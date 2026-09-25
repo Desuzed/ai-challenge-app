@@ -212,6 +212,10 @@ button:disabled { cursor: wait; opacity: .7; }
 .mcp-tools-card { padding: 14px; border: 1px solid #ead9ad; border-radius: 10px; background: #fff; }
 .mcp-tools-card h3 { margin: 0; color: #614800; font-size: .95rem; }
 .mcp-tools { display: grid; gap: 7px; margin: 12px 0; }
+.mcp-servers { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin: 12px 0; }
+.mcp-server { padding: 10px; border-radius: 8px; background: #f5f8fc; border: 1px solid #d6e0ec; }
+.mcp-server strong { display: block; color: #183b63; font-size: .85rem; }
+.mcp-server span { display: block; margin-top: 3px; color: #526174; font-size: .78rem; line-height: 1.4; }
 .mcp-tool { padding: 9px; border-left: 3px solid #e7b832; background: #fffaf0; }
 .mcp-tool strong { display: block; color: #614800; font: .82rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .mcp-tool span { display: block; margin-top: 3px; color: #526174; font-size: .8rem; line-height: 1.4; }
