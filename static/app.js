@@ -51,6 +51,7 @@ const mcpResult = document.querySelector('#mcp-result');
 let selectedAgentModel = 'deepseek-flash';
 let activeTask = {};
 let activeProfileID = '';
+const messageTimes = new Map();
 const strategyDescriptions = {
   sliding_window: 'В модель отправляются только последние N сообщений. Ранние реплики удаляются.',
   facts: 'В модель отправляются sticky facts и последние N сообщений. Summary не используется.',
@@ -133,6 +134,13 @@ async function loadMCP(event) {
 
 mcpRefresh.addEventListener('click', loadMCP);
 
+function formatMessageTime(value) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit', month: '2-digit', year: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(value);
+}
+
 function renderAgentHistory(messages) {
   agentHistory.replaceChildren();
   if (!messages?.length) {
@@ -142,12 +150,21 @@ function renderAgentHistory(messages) {
     agentHistory.append(empty);
     return;
   }
-  messages.forEach((message) => {
+  messages.forEach((message, index) => {
     if (message.content?.startsWith('[[phase-transition]]')) return;
     const item = document.createElement('article');
     item.className = `agent-message agent-message-${message.role}`;
+    const header = document.createElement('div');
+    header.className = 'agent-message-header';
     const role = document.createElement('strong');
     role.textContent = message.role === 'user' ? 'Вы' : 'Агент';
+    const time = document.createElement('time');
+    time.className = 'agent-message-time';
+    const key = `${index}:${message.role}:${message.content}`;
+    if (!messageTimes.has(key)) messageTimes.set(key, new Date());
+    time.dateTime = messageTimes.get(key).toISOString();
+    time.textContent = formatMessageTime(messageTimes.get(key));
+    header.append(role, time);
     const content = document.createElement('p');
     content.textContent = message.content;
     const memoryActions = document.createElement('div');
@@ -164,7 +181,7 @@ function renderAgentHistory(messages) {
       button.addEventListener('click', () => saveMessageToMemory(message.content, layer, category));
       memoryActions.append(button);
     });
-    item.append(role, content, memoryActions);
+    item.append(header, content, memoryActions);
     agentHistory.append(item);
   });
   agentHistory.scrollTop = agentHistory.scrollHeight;

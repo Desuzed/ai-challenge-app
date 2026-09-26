@@ -114,6 +114,8 @@ h2 { margin: 0; font-size: 1.05rem; }
 }
 
 .agent-message strong { color: #395577; font-size: .85rem; }
+.agent-message-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.agent-message-time { color: #6a7686; font-size: .75rem; white-space: nowrap; }
 .agent-message p { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
 .agent-message-user { justify-self: end; border-color: #9db5f4; background: #edf3ff; }
 .agent-message-assistant { justify-self: start; }

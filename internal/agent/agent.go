@@ -32,7 +32,7 @@ const projectPlannerPrompt = `Ты агент-проектировщик. Не �
 Этапами и переходами управляет сервер, а не ты. Всегда возвращай phase текущего состояния, но НИКОГДА не меняй его в ответе: можешь только подготовить результат текущего этапа и объяснить, какое явное действие ожидается от пользователя. Не перепрыгивай через этапы. Если пользователь просит вернуться к доработке, опиши нужную доработку, но не меняй phase. В КАЖДОМ ответе возвращай полный актуальный набор openQuestions, decisions и nextSteps, а не только изменения. Если пользователь утвердил план или решил вопрос, убери закрытые пункты из openQuestions, добавь решение в decisions и обнови currentStep, expectedAction и nextSteps для следующего осмысленного действия. Никогда не оставляй в тексте ТЗ или ожидаемом действии название прошлого этапа.
 
 artifactTitle и artifactContent заполняй автоматически, когда агент перешёл на последний этап и все пункты плана закрыты: нет openQuestions, а текущий шаг завершён. artifactContent — отдельный, самодостаточный Markdown-документ, а не ответ в чате: включи цель, границы, роли и сценарии, функциональные и нефункциональные требования, данные и интеграции, принятые решения, риски, критерии приёмки. Не включай код и не реализуй приложение. До финального этапа не возвращай эти поля, чтобы не перезаписать ранее сформированный артефакт.`
-const toolSystemPrompt = `У тебя есть MCP-инструменты для Яндекс Диска и GitHub. Сервер добавляет в контекст авторитетный свежий результат list_desktop_videos. Используй имя файла из него БУКВАЛЬНО и никогда не придумывай имена. Для списка и поиска отвечай по этому результату. Для длительности, кодеков, разрешения и FPS вызови analyze_desktop_video. Для размера, свободного места и проверки, поместится ли файл на Диск, вызови estimate_video_upload. Папка назначения должна быть взята из сообщения пользователя; если она не указана, задай короткий уточняющий вопрос. Для загрузки вызови upload_video_to_yandex. Для GitHub используй github_get_repository для общих сведений, github_list_files для вопроса о составе репозитория, github_get_file для содержимого и github_list_issues для задач. github_put_file и github_delete_file — внешние операции: перед ними назови файл, ветку и сообщение коммита и запроси явное подтверждение. Никогда не утверждай, что файл проанализирован, проверен, загружен, изменён или удалён, пока соответствующий инструмент не вернул успешный результат.`
+const toolSystemPrompt = `У тебя есть MCP-инструменты для Яндекс Диска, GitHub и погоды Москвы. Для текущей погоды Москвы сначала вызови collect_weather, затем weather_latest. Для статистики за период вызови weather_summary. Если пользователь просит настроить периодический сбор, вызови set_weather_schedule: переведи названный пользователем интервал во множество секунд и передай interval_seconds; не утверждай, что интервал установлен без успешного результата инструмента. Если пользователь просит остановить, выключить или приостановить фоновый сбор, вызови stop_weather_scheduler; сохранённую историю не удаляй. Для «всей собранной информации», списка или всех измерений вызови weather_history и покажи каждое измерение, в том числе одинаковые. scheduler_status показывает текущую частоту и следующее измерение. clear_weather_history — разрушительная операция: до её вызова назови, что будут удалены все накопленные измерения, и запроси явное подтверждение. Сервер добавляет в контекст авторитетный свежий результат list_desktop_videos. Используй имя файла из него БУКВАЛЬНО и никогда не придумывай имена. Для списка и поиска отвечай по этому результату. Для длительности, кодеков, разрешения и FPS вызови analyze_desktop_video. Для размера, свободного места и проверки, поместится ли файл на Диск, вызови estimate_video_upload. Папка назначения должна быть взята из сообщения пользователя; если она не указана, задай короткий уточняющий вопрос. Для загрузки вызови upload_video_to_yandex. Для GitHub используй github_get_repository для общих сведений, github_list_files для вопроса о составе репозитория, github_get_file для содержимого и github_list_issues для задач. github_put_file и github_delete_file — внешние операции: перед ними назови файл, ветку и сообщение коммита и запроси явное подтверждение. Никогда не утверждай, что файл проанализирован, проверен, загружен, изменён или удалён, пока соответствующий инструмент не вернул успешный результат.`
 const defaultRecentMessages = 10
 const minRecentMessages = 2
 const maxRecentMessages = 40
@@ -71,28 +71,29 @@ type checkpoint struct {
 	messages       []models.ChatMessage
 }
 type conversation struct {
-	mu                         sync.Mutex
-	workMu                     sync.Mutex
-	activeWorkCancel           context.CancelFunc
-	pauseRequested             bool
-	activeTask                 models.TaskState
-	pendingMessage             string
-	plannerMode                string
-	strategy                   models.ContextStrategy
-	model                      string
-	recentMessages             int
-	messages                   []models.ChatMessage
-	facts                      map[string]string
-	workingMemory              map[string]string
-	userID                     string
-	activeProfileID            string
-	task                       models.TaskState
-	usages                     []models.ModelUsage
-	branches                   map[string]*dialogueBranch
-	activeBranchID             string
-	checkpoints                map[string]checkpoint
-	nextBranch, nextCheckpoint int
-	nextMemoryItem             int
+	mu                              sync.Mutex
+	workMu                          sync.Mutex
+	activeWorkCancel                context.CancelFunc
+	pauseRequested                  bool
+	activeTask                      models.TaskState
+	pendingMessage                  string
+	plannerMode                     string
+	strategy                        models.ContextStrategy
+	model                           string
+	recentMessages                  int
+	messages                        []models.ChatMessage
+	facts                           map[string]string
+	workingMemory                   map[string]string
+	userID                          string
+	activeProfileID                 string
+	weatherClearConfirmationPending bool
+	task                            models.TaskState
+	usages                          []models.ModelUsage
+	branches                        map[string]*dialogueBranch
+	activeBranchID                  string
+	checkpoints                     map[string]checkpoint
+	nextBranch, nextCheckpoint      int
+	nextMemoryItem                  int
 }
 type userState struct {
 	profiles         map[string]models.UserProfile
@@ -265,7 +266,14 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		c.task = previousTask
 		return models.AgentResponse{}, err
 	}
-	completion, err := a.completeLocked(workCtx, c.model, request, plannerTurn, toolTurn, message)
+	weatherClearWasPending := c.weatherClearConfirmationPending
+	if weatherClearRequest(message) {
+		// The initial deletion request always starts a two-step flow. The model
+		// interprets the next user reply, so no exact acknowledgement phrase is
+		// required here.
+		c.weatherClearConfirmationPending = true
+	}
+	completion, err := a.completeLocked(workCtx, c.model, request, plannerTurn, toolTurn, message, weatherClearWasPending)
 	pauseRequested := c.finishWork()
 	if pauseRequested {
 		return a.respondAfterActivePauseLocked(c, u, previous, beforeFacts, message)
@@ -275,6 +283,9 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		c.facts = beforeFacts
 		c.task = previousTask
 		return models.AgentResponse{}, err
+	}
+	if weatherHistoryWasCleared(completion.ToolExecutions) {
+		c.weatherClearConfirmationPending = false
 	}
 	answer := completion.Answer
 	if plannerTurn {
@@ -372,13 +383,13 @@ func (a *Agent) respondWhileTaskPausedLocked(c *conversation, u *userState, mess
 	return a.responseLocked(c, u, answer, nil, report), nil
 }
 
-func (a *Agent) completeLocked(ctx context.Context, model string, request []models.ChatMessage, planner, toolTurn bool, latestUserMessage string) (models.ModelCompletion, error) {
+func (a *Agent) completeLocked(ctx context.Context, model string, request []models.ChatMessage, planner, toolTurn bool, latestUserMessage string, weatherClearConfirmed bool) (models.ModelCompletion, error) {
 	settings := a.settings
 	if planner {
 		settings.MaxTokens = plannerMaxTokens
 	}
 	if toolTurn {
-		return a.completeWithToolsLocked(ctx, model, request, settings, latestUserMessage)
+		return a.completeWithToolsLocked(ctx, model, request, settings, latestUserMessage, weatherClearConfirmed)
 	}
 	if model == models.DeepSeekFlashModel {
 		return a.client.CompleteMessages(ctx, request, settings)
@@ -390,7 +401,7 @@ func (a *Agent) completeLocked(ctx context.Context, model string, request []mode
 	return client.CompleteMessagesModel(ctx, model, request, settings)
 }
 
-func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, request []models.ChatMessage, settings models.GenerationSettings, latestUserMessage string) (models.ModelCompletion, error) {
+func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, request []models.ChatMessage, settings models.GenerationSettings, latestUserMessage string, weatherClearConfirmed bool) (models.ModelCompletion, error) {
 	client, ok := a.client.(toolCompleter)
 	if !ok || a.tools == nil {
 		return models.ModelCompletion{}, errors.New("Выбранный клиент не поддерживает MCP tool calling.")
@@ -399,17 +410,22 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 	if err != nil {
 		return models.ModelCompletion{}, err
 	}
-	listResult, listIsError, listErr := a.tools.CallForModel(ctx, "list_desktop_videos", map[string]any{})
-	if listErr != nil {
-		return models.ModelCompletion{}, fmt.Errorf("получить список видео через MCP: %w", listErr)
-	}
-	if listIsError {
-		return models.ModelCompletion{}, errors.New("MCP не смог получить список видео: " + listResult)
-	}
-	availableVideos := videoNamesFromToolResult(listResult)
-	executions := []models.ToolExecution{{Name: "list_desktop_videos", Arguments: map[string]any{}, Result: listResult}}
+	availableVideos := map[string]bool{}
+	executions := []models.ToolExecution{}
 	messages := append([]models.ChatMessage(nil), request...)
-	toolContext := toolSystemPrompt + "\n\nАвторитетный результат MCP list_desktop_videos:\n" + listResult
+	toolContext := toolSystemPrompt
+	if !weatherIntent(latestUserMessage) {
+		listResult, listIsError, listErr := a.tools.CallForModel(ctx, "list_desktop_videos", map[string]any{})
+		if listErr != nil {
+			return models.ModelCompletion{}, fmt.Errorf("получить список видео через MCP: %w", listErr)
+		}
+		if listIsError {
+			return models.ModelCompletion{}, errors.New("MCP не смог получить список видео: " + listResult)
+		}
+		availableVideos = videoNamesFromToolResult(listResult)
+		executions = append(executions, models.ToolExecution{Name: "list_desktop_videos", Arguments: map[string]any{}, Result: listResult})
+		toolContext += "\n\nАвторитетный результат MCP list_desktop_videos:\n" + listResult
+	}
 	if len(messages) > 0 && messages[0].Role == "system" {
 		withTools := make([]models.ChatMessage, 0, len(messages)+1)
 		withTools = append(withTools, messages[0], models.ChatMessage{Role: "system", Content: toolContext})
@@ -467,6 +483,16 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 			if call.Function.Name == "upload_video_to_yandex" {
 				arguments["confirm"] = true
 			}
+			if call.Function.Name == "clear_weather_history" && !weatherClearConfirmed {
+				arguments["confirm"] = false
+				payload, _ := json.Marshal(map[string]any{"isError": true, "error": "confirmation_required", "message": "История погоды не очищена. Сообщи число удаляемых измерений (если известно) и попроси пользователя явно подтвердить очистку."})
+				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
+				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
+				continue
+			}
+			if call.Function.Name == "clear_weather_history" {
+				arguments["confirm"] = true
+			}
 			if (call.Function.Name == "github_put_file" || call.Function.Name == "github_delete_file") && !explicitGitHubConfirmation(latestUserMessage) {
 				arguments["confirm"] = false
 				payload, _ := json.Marshal(map[string]any{
@@ -495,6 +521,15 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 					Answer: groundedUploadAnswer("", executions, true), FinishReason: "tool_success",
 					Usage: total, ToolExecutions: executions,
 				}, nil
+			}
+			if call.Function.Name == "set_weather_schedule" && !isError {
+				return models.ModelCompletion{Answer: "Расписание сбора погоды обновлено. Новый снимок будет собран сразу, затем — с выбранной периодичностью.\n\n" + content, FinishReason: "tool_success", Usage: total, ToolExecutions: executions}, nil
+			}
+			if call.Function.Name == "stop_weather_scheduler" && !isError {
+				return models.ModelCompletion{Answer: "Фоновый сбор погоды остановлен. История измерений сохранена.\n\n" + content, FinishReason: "tool_success", Usage: total, ToolExecutions: executions}, nil
+			}
+			if call.Function.Name == "weather_history" && !isError {
+				return models.ModelCompletion{Answer: formatWeatherHistoryForChat(content), FinishReason: "tool_success", Usage: total, ToolExecutions: executions}, nil
 			}
 			if (call.Function.Name == "github_put_file" || call.Function.Name == "github_delete_file") && !isError {
 				return models.ModelCompletion{
@@ -538,6 +573,31 @@ func mapKeys(values map[string]bool) []string {
 	return keys
 }
 
+func formatWeatherHistoryForChat(content string) string {
+	var history struct {
+		MeasurementCount int `json:"measurementCount"`
+		Observations     []struct {
+			CollectedAt          time.Time `json:"collectedAt"`
+			Condition            string    `json:"condition"`
+			TemperatureC         float64   `json:"temperatureC"`
+			ApparentTemperatureC float64   `json:"apparentTemperatureC"`
+			HumidityPercent      int       `json:"humidityPercent"`
+			PrecipitationMM      float64   `json:"precipitationMM"`
+			WindSpeedKMH         float64   `json:"windSpeedKMH"`
+		} `json:"observations"`
+	}
+	if err := json.Unmarshal([]byte(content), &history); err != nil || len(history.Observations) == 0 {
+		return "История погоды пуста."
+	}
+	moscow := time.FixedZone("MSK", 3*60*60)
+	var text strings.Builder
+	fmt.Fprintf(&text, "Все сохранённые измерения погоды Москвы: %d.\n", history.MeasurementCount)
+	for index, observation := range history.Observations {
+		fmt.Fprintf(&text, "\n%d. %s — %s, %.0f °C (ощущается как %.0f °C), влажность %d%%, осадки %.1f мм, ветер %.0f км/ч.", index+1, observation.CollectedAt.In(moscow).Format("02.01.06, 15:04"), observation.Condition, observation.TemperatureC, observation.ApparentTemperatureC, observation.HumidityPercent, observation.PrecipitationMM, observation.WindSpeedKMH)
+	}
+	return text.String()
+}
+
 func addUsage(left, right models.ModelUsage) models.ModelUsage {
 	return models.ModelUsage{
 		InputTokens: left.InputTokens + right.InputTokens, OutputTokens: left.OutputTokens + right.OutputTokens,
@@ -557,7 +617,13 @@ func toolIntent(message string) bool {
 	quota := strings.Contains(message, "помест") || strings.Contains(message, "свобод") || strings.Contains(message, "места") || strings.Contains(message, "квот") || strings.Contains(message, "сколько займ")
 	strongMetadata := strings.Contains(message, "длитель") || strings.Contains(message, "кодек") || strings.Contains(message, "разрешен") || strings.Contains(message, "fps") || strings.Contains(message, "метадан")
 	github := strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "гитаб") || strings.Contains(message, "репозитор") || strings.Contains(message, "issue") || strings.Contains(message, "иссу") || strings.Contains(message, "pull request") || strings.Contains(message, "пулл")
-	return github || (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
+	clearWeather := strings.Contains(message, "очист") && (strings.Contains(message, "сводк") || strings.Contains(message, "истори"))
+	return clearWeather || weatherIntent(message) || github || (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
+}
+
+func weatherIntent(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "погод") || strings.Contains(message, "температур") || strings.Contains(message, "дожд") || strings.Contains(message, "осадк") || strings.Contains(message, "ветер") || strings.Contains(message, "градус") || strings.Contains(message, "москв") || (strings.Contains(message, "собира") && (strings.Contains(message, "минут") || strings.Contains(message, "час"))) || (strings.Contains(message, "собран") && (strings.Contains(message, "информац") || strings.Contains(message, "значен"))) || ((strings.Contains(message, "останов") || strings.Contains(message, "выключ") || strings.Contains(message, "приостанов")) && (strings.Contains(message, "сбор") || strings.Contains(message, "планиров") || strings.Contains(message, "измерен")))
 }
 
 func toolFollowupIntent(message string, previous []models.ChatMessage) bool {
@@ -565,7 +631,11 @@ func toolFollowupIntent(message string, previous []models.ChatMessage) bool {
 		return false
 	}
 	context := strings.ToLower(previous[len(previous)-1].Content)
+	weatherContext := strings.Contains(context, "погод") || strings.Contains(context, "измерен") || strings.Contains(context, "планировщик") || strings.Contains(context, "сбор")
 	videoContext := strings.Contains(context, "видео") || strings.Contains(context, "загруз") || strings.Contains(context, "яндекс") || strings.Contains(context, ".mov") || strings.Contains(context, ".mp4") || strings.Contains(context, ".mkv") || strings.Contains(context, ".webm")
+	if weatherContext {
+		return true
+	}
 	if !videoContext {
 		return false
 	}
@@ -581,20 +651,33 @@ func awaitingToolConfirmation(messages []models.ChatMessage) bool {
 	if !strings.Contains(text, "подтверд") {
 		return false
 	}
-	return strings.Contains(text, "загруз") || strings.Contains(text, "яндекс") || strings.Contains(text, "github") || strings.Contains(text, "гитхаб") || strings.Contains(text, "коммит")
+	return strings.Contains(text, "загруз") || strings.Contains(text, "яндекс") || strings.Contains(text, "github") || strings.Contains(text, "гитхаб") || strings.Contains(text, "коммит") || (strings.Contains(text, "очист") && strings.Contains(text, "погод"))
+}
+
+func weatherClearRequest(message string) bool {
+	message = strings.ToLower(message)
+	clear := strings.Contains(message, "очист") || strings.Contains(message, "удал") || strings.Contains(message, "стер")
+	target := strings.Contains(message, "погод") || strings.Contains(message, "измерен") || strings.Contains(message, "истори") || strings.Contains(message, "сводк")
+	return clear && target
+}
+
+func weatherHistoryWasCleared(executions []models.ToolExecution) bool {
+	for _, execution := range executions {
+		if execution.Name == "clear_weather_history" && !execution.IsError {
+			return true
+		}
+	}
+	return false
 }
 
 func explicitUploadConfirmation(message string) bool {
 	message = strings.ToLower(strings.TrimSpace(message))
-	if message == "да" || message == "ок" || message == "подтверждаю" || message == "загружай" || message == "закидывай" {
-		return true
-	}
 	return (strings.Contains(message, "подтверждаю") && strings.Contains(message, "загруж")) || strings.Contains(message, "да, загруж") || strings.Contains(message, "да загруж") || strings.Contains(message, "можно загруж") || strings.Contains(message, "повтори загруз") || strings.Contains(message, "попробуй ещё раз") || strings.Contains(message, "попробуй еще раз") || (strings.Contains(message, "создал папк") && strings.Contains(message, "попроб"))
 }
 
 func explicitGitHubConfirmation(message string) bool {
 	message = strings.ToLower(strings.TrimSpace(message))
-	return message == "да" || message == "ок" || message == "подтверждаю" || (strings.Contains(message, "подтверждаю") && (strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "коммит") || strings.Contains(message, "файл")))
+	return strings.Contains(message, "подтверждаю") && (strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "коммит") || strings.Contains(message, "файл"))
 }
 
 func groundedUploadAnswer(modelAnswer string, executions []models.ToolExecution, confirmationGiven bool) string {
