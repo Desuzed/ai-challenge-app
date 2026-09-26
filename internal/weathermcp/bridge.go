@@ -76,9 +76,7 @@ type Status struct {
 type summaryInput struct {
 	PeriodHours int `json:"period_hours,omitempty" jsonschema:"period in hours, 1-720; default 24"`
 }
-type clearHistoryInput struct {
-	Confirm bool `json:"confirm" jsonschema:"must be true after explicit user confirmation"`
-}
+type clearHistoryInput struct{}
 type scheduleInput struct {
 	IntervalSeconds int `json:"interval_seconds" jsonschema:"collection interval in seconds, from 60 to 86400"`
 }
@@ -176,10 +174,7 @@ func New(ctx context.Context, cfg Config) (*Bridge, error) {
 		out := append([]Observation(nil), b.data.Observations[start:]...)
 		return nil, map[string]any{"location": "Москва", "measurementCount": len(out), "observations": out}, nil
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "clear_weather_history", Title: "Очистить историю погоды", Description: "Удаляет все сохранённые измерения погоды Москвы после confirm=true. Планировщик продолжает работать.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &openWorld, OpenWorldHint: &falseValue}}, func(_ context.Context, _ *mcp.CallToolRequest, in clearHistoryInput) (*mcp.CallToolResult, any, error) {
-		if !in.Confirm {
-			return nil, nil, errors.New("очистка истории погоды требует явного confirm=true")
-		}
+	mcp.AddTool(server, &mcp.Tool{Name: "clear_weather_history", Title: "Очистить историю погоды", Description: "Удаляет все сохранённые измерения погоды Москвы. Планировщик продолжает работать.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &openWorld, OpenWorldHint: &falseValue}}, func(_ context.Context, _ *mcp.CallToolRequest, _ clearHistoryInput) (*mcp.CallToolResult, any, error) {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		cleared := len(b.data.Observations)
