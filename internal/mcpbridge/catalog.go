@@ -10,12 +10,14 @@ import (
 
 	"ai-challenge-app/internal/githubmcp"
 	"ai-challenge-app/internal/models"
+	"ai-challenge-app/internal/weathermcp"
 )
 
 // Catalog presents multiple independent MCP servers as one agent tool runtime.
 type Catalog struct {
-	yandex *Bridge
-	github *githubmcp.Bridge
+	yandex  *Bridge
+	github  *githubmcp.Bridge
+	weather *weathermcp.Bridge
 }
 type ServerView struct {
 	ID         string `json:"id"`
@@ -33,10 +35,12 @@ type CatalogStatus struct {
 	TokenExplanation          string       `json:"tokenExplanation"`
 }
 
-func NewCatalog(yandex *Bridge, github *githubmcp.Bridge) *Catalog {
-	return &Catalog{yandex: yandex, github: github}
+func NewCatalog(yandex *Bridge, github *githubmcp.Bridge, weather *weathermcp.Bridge) *Catalog {
+	return &Catalog{yandex: yandex, github: github, weather: weather}
 }
-func (c *Catalog) Close() error { return errors.Join(c.yandex.Close(), c.github.Close()) }
+func (c *Catalog) Close() error {
+	return errors.Join(c.yandex.Close(), c.github.Close(), c.weather.Close())
+}
 func (c *Catalog) Status(ctx context.Context) (CatalogStatus, error) {
 	ys, err := c.yandex.Status(ctx)
 	if err != nil {
@@ -46,12 +50,23 @@ func (c *Catalog) Status(ctx context.Context) (CatalogStatus, error) {
 	if err != nil {
 		return CatalogStatus{}, err
 	}
+	ws, err := c.weather.Status(ctx)
+	if err != nil {
+		return CatalogStatus{}, err
+	}
 	tools := append([]ToolView{}, ys.Tools...)
 	for _, tool := range gs.Tools {
 		tools = append(tools, ToolView{Name: tool.Name, Title: tool.Title, Description: tool.Description, InputSchema: tool.InputSchema, ReadOnly: tool.ReadOnly})
 	}
+	for _, tool := range ws.Tools {
+		tools = append(tools, ToolView{Name: tool.Name, Title: tool.Title, Description: tool.Description, InputSchema: tool.InputSchema, ReadOnly: tool.ReadOnly})
+	}
 	encoded, _ := json.Marshal(tools)
-	return CatalogStatus{Connected: true, Servers: []ServerView{{ID: "yandex-disk", Name: "Яндекс Диск", Connected: ys.Connected, Configured: ys.Configured, Detail: ys.RootFolder, ToolCount: len(ys.Tools)}, {ID: "github", Name: "GitHub", Connected: gs.Connected, Configured: gs.Configured, Detail: gs.Repository, ToolCount: len(gs.Tools)}}, Tools: tools, EstimatedDefinitionTokens: estimateTextTokens(len(encoded)), TokenExplanation: "tools/list выполняется локально; в модель передаются только схемы и текстовые результаты вызовов."}, nil
+	weatherDetail := fmt.Sprintf("%d измерений · каждые %d с", ws.Measurements, ws.IntervalSeconds)
+	if !ws.Scheduler.Enabled {
+		weatherDetail = fmt.Sprintf("%d измерений · сбор остановлен", ws.Measurements)
+	}
+	return CatalogStatus{Connected: true, Servers: []ServerView{{ID: "yandex-disk", Name: "Яндекс Диск", Connected: ys.Connected, Configured: ys.Configured, Detail: ys.RootFolder, ToolCount: len(ys.Tools)}, {ID: "github", Name: "GitHub", Connected: gs.Connected, Configured: gs.Configured, Detail: gs.Repository, ToolCount: len(gs.Tools)}, {ID: "weather", Name: "Погода Москвы", Connected: ws.Connected, Configured: true, Detail: weatherDetail, ToolCount: len(ws.Tools)}}, Tools: tools, EstimatedDefinitionTokens: estimateTextTokens(len(encoded)), TokenExplanation: "tools/list выполняется локально; в модель передаются только схемы и текстовые результаты вызовов."}, nil
 }
 func (c *Catalog) ToolsForModel(ctx context.Context) ([]models.ToolDefinition, error) {
 	y, err := c.yandex.ToolsForModel(ctx)
@@ -62,11 +77,18 @@ func (c *Catalog) ToolsForModel(ctx context.Context) ([]models.ToolDefinition, e
 	if err != nil {
 		return nil, err
 	}
-	return append(y, g...), nil
+	w, err := c.weather.ToolsForModel(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(append(y, g...), w...), nil
 }
 func (c *Catalog) CallForModel(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	if strings.HasPrefix(name, "github_") {
 		return c.github.CallForModel(ctx, name, args)
+	}
+	if strings.HasPrefix(name, "weather_") || name == "collect_weather" || name == "scheduler_status" || name == "set_weather_schedule" || name == "stop_weather_scheduler" || name == "clear_weather_history" {
+		return c.weather.CallForModel(ctx, name, args)
 	}
 	return c.yandex.CallForModel(ctx, name, args)
 }
@@ -105,4 +127,4 @@ func (c *Catalog) CallHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, map[string]any{"name": input.Name, "isError": isError, "content": content})
 }
-func (c *Catalog) String() string { return fmt.Sprintf("MCP catalog: yandex and github") }
+func (c *Catalog) String() string { return fmt.Sprintf("MCP catalog: yandex, github and weather") }
