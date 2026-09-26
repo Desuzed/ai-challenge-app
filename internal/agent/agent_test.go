@@ -175,6 +175,41 @@ func TestToolFollowupIntentUsesPreviousVideoContext(t *testing.T) {
 	}
 }
 
+func TestToolFollowupIntentUsesWeatherContextForEveryMeasurement(t *testing.T) {
+	previous := []models.ChatMessage{{Role: "assistant", Content: "Сводка погоды Москвы: измерений 22, температура 9 °C."}}
+	if !toolFollowupIntent("Нет, напиши каждое измерение, которое ты измерил", previous) {
+		t.Fatal("weather follow-up must activate MCP tools")
+	}
+	if !toolFollowupIntent("да", previous) {
+		t.Fatal("weather acknowledgement must activate MCP tools")
+	}
+}
+
+func TestWeatherHistoryClearUsesConversationState(t *testing.T) {
+	if !weatherClearRequest("удали историю погодных измерений") {
+		t.Fatal("weather clear request must start a confirmation flow")
+	}
+	if weatherClearRequest("подтверждаю") {
+		t.Fatal("acknowledgement must not be tied to a hardcoded phrase")
+	}
+	if !weatherHistoryWasCleared([]models.ToolExecution{{Name: "clear_weather_history"}}) {
+		t.Fatal("successful weather clear must close the confirmation flow")
+	}
+	if explicitGitHubConfirmation("да") {
+		t.Fatal("plain confirmation must not be treated as a GitHub confirmation")
+	}
+	if explicitUploadConfirmation("да") {
+		t.Fatal("plain confirmation must not be treated as an upload confirmation")
+	}
+}
+
+func TestFormatWeatherHistoryForChatUsesPlainTextRowsAndMoscowTime(t *testing.T) {
+	formatted := formatWeatherHistoryForChat(`{"measurementCount":2,"observations":[{"collectedAt":"2026-09-26T06:20:12Z","condition":"Sunny","temperatureC":9,"apparentTemperatureC":7,"humidityPercent":79,"precipitationMM":0,"windSpeedKMH":9},{"collectedAt":"2026-09-26T06:21:12Z","condition":"Sunny","temperatureC":9,"apparentTemperatureC":7,"humidityPercent":79,"precipitationMM":0,"windSpeedKMH":9}]}`)
+	if !strings.Contains(formatted, "Все сохранённые измерения погоды Москвы: 2.") || !strings.Contains(formatted, "1. 26.09.26, 09:20") || !strings.Contains(formatted, "2. 26.09.26, 09:21") {
+		t.Fatalf("formatted history = %q", formatted)
+	}
+}
+
 func TestGroundedUploadAnswerNeverClaimsSuccessWithoutToolResult(t *testing.T) {
 	answer := groundedUploadAnswer("Файл загружен, ожидайте.", nil, true)
 	if strings.Contains(answer, "ожидайте") || !strings.Contains(answer, "не выполнена") {
