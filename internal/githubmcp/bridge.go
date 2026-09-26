@@ -100,7 +100,6 @@ type putFileInput struct {
 	Content string `json:"content" jsonschema:"complete UTF-8 text to commit"`
 	Message string `json:"message" jsonschema:"commit message"`
 	Branch  string `json:"branch,omitempty" jsonschema:"target branch; default is repository default branch"`
-	Confirm bool   `json:"confirm" jsonschema:"must be true after explicit user confirmation"`
 }
 type putFileOutput struct {
 	Path      string `json:"path"`
@@ -113,7 +112,6 @@ type deleteFileInput struct {
 	Path    string `json:"path" jsonschema:"repository-relative text-file path"`
 	Message string `json:"message" jsonschema:"commit message"`
 	Branch  string `json:"branch,omitempty" jsonschema:"target branch; default is repository default branch"`
-	Confirm bool   `json:"confirm" jsonschema:"must be true after explicit user confirmation"`
 }
 type deleteFileOutput struct {
 	Path      string `json:"path"`
@@ -133,7 +131,7 @@ func New(ctx context.Context, cfg Config) (*Bridge, error) {
 		cfg.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	b := &Bridge{cfg: cfg, owner: parts[0], repo: parts[1]}
-	server := mcp.NewServer(&mcp.Implementation{Name: "github-repository-mcp", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "Read GitHub repository data and edit text files only after explicit confirmation."})
+	server := mcp.NewServer(&mcp.Implementation{Name: "github-repository-mcp", Version: "1.0.0"}, &mcp.ServerOptions{Instructions: "Read and edit text files in the configured GitHub repository. Writes are executed immediately."})
 	readOnly, falseValue, openWorld := true, false, true
 	destructive := true
 	mcp.AddTool(server, &mcp.Tool{Name: "github_get_repository", Title: "Сведения о репозитории GitHub", Description: "Возвращает название, описание, ветку по умолчанию и ссылку подключённого репозитория.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &falseValue, OpenWorldHint: &openWorld}}, func(ctx context.Context, _ *mcp.CallToolRequest, _ repositoryInput) (*mcp.CallToolResult, repositoryOutput, error) {
@@ -152,17 +150,11 @@ func New(ctx context.Context, cfg Config) (*Bridge, error) {
 		output, err := b.listIssues(ctx, in)
 		return nil, output, err
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "github_put_file", Title: "Создать или обновить текстовый файл", Description: "Создаёт или обновляет UTF-8 текстовый файл коммитом в GitHub после confirm=true.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falseValue, OpenWorldHint: &openWorld}}, func(ctx context.Context, _ *mcp.CallToolRequest, in putFileInput) (*mcp.CallToolResult, putFileOutput, error) {
-		if !in.Confirm {
-			return nil, putFileOutput{}, errors.New("запись в GitHub требует явного confirm=true")
-		}
+	mcp.AddTool(server, &mcp.Tool{Name: "github_put_file", Title: "Создать или обновить текстовый файл", Description: "Создаёт или обновляет UTF-8 текстовый файл отдельным коммитом в GitHub.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falseValue, OpenWorldHint: &openWorld}}, func(ctx context.Context, _ *mcp.CallToolRequest, in putFileInput) (*mcp.CallToolResult, putFileOutput, error) {
 		output, err := b.putFile(ctx, in)
 		return nil, output, err
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "github_delete_file", Title: "Удалить текстовый файл", Description: "Удаляет текстовый файл отдельным коммитом GitHub после confirm=true.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, _ *mcp.CallToolRequest, in deleteFileInput) (*mcp.CallToolResult, deleteFileOutput, error) {
-		if !in.Confirm {
-			return nil, deleteFileOutput{}, errors.New("удаление из GitHub требует явного confirm=true")
-		}
+	mcp.AddTool(server, &mcp.Tool{Name: "github_delete_file", Title: "Удалить текстовый файл", Description: "Удаляет текстовый файл отдельным коммитом GitHub.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, _ *mcp.CallToolRequest, in deleteFileInput) (*mcp.CallToolResult, deleteFileOutput, error) {
 		output, err := b.deleteFile(ctx, in)
 		return nil, output, err
 	})
