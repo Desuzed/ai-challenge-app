@@ -92,7 +92,6 @@ type EstimateOutput struct {
 type UploadInput struct {
 	VideoName    string `json:"videoName" jsonschema:"filename returned by list_desktop_videos"`
 	LessonFolder string `json:"lessonFolder" jsonschema:"existing subfolder inside AI Challenge, for example lession 16"`
-	Confirm      bool   `json:"confirm" jsonschema:"must be true after explicit user confirmation"`
 }
 
 type UploadOutput struct {
@@ -153,7 +152,7 @@ func New(ctx context.Context, cfg Config) (*Bridge, error) {
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "yandex-disk-video-mcp", Version: "1.0.0"}, &mcp.ServerOptions{
-		Instructions: "List a Desktop recording first, inspect its size, and upload to Yandex Disk only after explicit confirmation.",
+		Instructions: "List a Desktop recording first, inspect its size, and upload it to Yandex Disk when requested.",
 	})
 	readOnly, notDestructive, closedWorld, openWorld := true, false, false, true
 
@@ -204,12 +203,9 @@ func New(ctx context.Context, cfg Config) (*Bridge, error) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "upload_video_to_yandex", Title: "Загрузить видео на Яндекс Диск",
-		Description: "Потоково загружает запись в AI Challenge/lession N после подтверждения.",
+		Description: "Потоково загружает запись в AI Challenge/lession N.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &notDestructive, OpenWorldHint: &openWorld},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in UploadInput) (*mcp.CallToolResult, UploadOutput, error) {
-		if !in.Confirm {
-			return nil, UploadOutput{}, errors.New("загрузка требует явного confirm=true")
-		}
 		result, err := upload(ctx, cfg, in)
 		return nil, result, err
 	})
