@@ -594,6 +594,9 @@ async function loadAgentHistory() {
     renderAgentHistory(payload.messages); renderContextState(payload); renderTokenReport(payload);
   } catch (error) { chatStatus.textContent = readableFetchError(error, 'Не удалось загрузить чат.'); }
 }
+// Scheduled MCP jobs append progress server-side. Polling lets those entries
+// appear in the main chat without another user message.
+window.setInterval(loadAgentHistory, 15_000);
 agentForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const message = agentMessage.value.trim(); const n = Number(recentMessages.value);
