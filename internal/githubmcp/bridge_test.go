@@ -63,7 +63,7 @@ func TestBridgeListsReadsAndWritesTextFiles(t *testing.T) {
 	if err := json.Unmarshal(data, &files); err != nil || files.Ref != "main" || len(files.Files) != 2 {
 		t.Fatalf("files=%#v err=%v", files, err)
 	}
-	written, err := bridge.Call(context.Background(), "github_put_file", map[string]any{"path": "notes.txt", "content": "saved text", "message": "docs: add notes", "confirm": true})
+	written, err := bridge.Call(context.Background(), "github_put_file", map[string]any{"path": "notes.txt", "content": "saved text", "message": "docs: add notes"})
 	if err != nil || written.IsError {
 		t.Fatalf("written=%#v err=%v", written, err)
 	}
@@ -71,7 +71,7 @@ func TestBridgeListsReadsAndWritesTextFiles(t *testing.T) {
 	if string(decoded) != "saved text" || wrote["branch"] != "main" {
 		t.Fatalf("write body=%#v", wrote)
 	}
-	deleted, err := bridge.Call(context.Background(), "github_delete_file", map[string]any{"path": "obsolete.txt", "message": "docs: remove obsolete file", "confirm": true})
+	deleted, err := bridge.Call(context.Background(), "github_delete_file", map[string]any{"path": "obsolete.txt", "message": "docs: remove obsolete file"})
 	if err != nil || deleted.IsError || wrote["sha"] != "obsolete-sha" {
 		t.Fatalf("deleted=%#v write body=%#v err=%v", deleted, wrote, err)
 	}
