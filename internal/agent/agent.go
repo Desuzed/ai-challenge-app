@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,7 +33,9 @@ const projectPlannerPrompt = `Ты агент-проектировщик. Не �
 Этапами и переходами управляет сервер, а не ты. Всегда возвращай phase текущего состояния, но НИКОГДА не меняй его в ответе: можешь только подготовить результат текущего этапа и объяснить, какое явное действие ожидается от пользователя. Не перепрыгивай через этапы. Если пользователь просит вернуться к доработке, опиши нужную доработку, но не меняй phase. В КАЖДОМ ответе возвращай полный актуальный набор openQuestions, decisions и nextSteps, а не только изменения. Если пользователь утвердил план или решил вопрос, убери закрытые пункты из openQuestions, добавь решение в decisions и обнови currentStep, expectedAction и nextSteps для следующего осмысленного действия. Никогда не оставляй в тексте ТЗ или ожидаемом действии название прошлого этапа.
 
 artifactTitle и artifactContent заполняй автоматически, когда агент перешёл на последний этап и все пункты плана закрыты: нет openQuestions, а текущий шаг завершён. artifactContent — отдельный, самодостаточный Markdown-документ, а не ответ в чате: включи цель, границы, роли и сценарии, функциональные и нефункциональные требования, данные и интеграции, принятые решения, риски, критерии приёмки. Не включай код и не реализуй приложение. До финального этапа не возвращай эти поля, чтобы не перезаписать ранее сформированный артефакт.`
-const toolSystemPrompt = `У тебя есть MCP-инструменты для Яндекс Диска, GitHub и погоды Москвы. Для текущей погоды Москвы сначала вызови collect_weather, затем weather_latest. Для статистики за период вызови weather_summary. Если пользователь просит настроить периодический сбор, вызови set_weather_schedule: переведи названный пользователем интервал во множество секунд и передай interval_seconds; не утверждай, что интервал установлен без успешного результата инструмента. Если пользователь просит остановить, выключить или приостановить фоновый сбор, вызови stop_weather_scheduler; сохранённую историю не удаляй. Для «всей собранной информации», списка или всех измерений вызови weather_history и покажи каждое измерение, в том числе одинаковые. scheduler_status показывает текущую частоту и следующее измерение. clear_weather_history — разрушительная операция: до её вызова назови, что будут удалены все накопленные измерения, и запроси явное подтверждение. Сервер добавляет в контекст авторитетный свежий результат list_desktop_videos. Используй имя файла из него БУКВАЛЬНО и никогда не придумывай имена. Для списка и поиска отвечай по этому результату. Для длительности, кодеков, разрешения и FPS вызови analyze_desktop_video. Для размера, свободного места и проверки, поместится ли файл на Диск, вызови estimate_video_upload. Папка назначения должна быть взята из сообщения пользователя; если она не указана, задай короткий уточняющий вопрос. Для загрузки вызови upload_video_to_yandex. Для GitHub используй github_get_repository для общих сведений, github_list_files для вопроса о составе репозитория, github_get_file для содержимого и github_list_issues для задач. github_put_file и github_delete_file — внешние операции: перед ними назови файл, ветку и сообщение коммита и запроси явное подтверждение. Никогда не утверждай, что файл проанализирован, проверен, загружен, изменён или удалён, пока соответствующий инструмент не вернул успешный результат.`
+const toolSystemPrompt = `У тебя есть MCP-инструменты Яндекс Диска, GitHub, погоды Москвы и поиска новостей. Выполняй вызовы без запроса подтверждения: успешный результат инструмента — единственное основание сообщать об операции. Для текущей погоды Москвы сначала вызови collect_weather, затем weather_latest. Для статистики за период вызови weather_summary. Для «всей собранной информации», списка или всех измерений вызови weather_history. Для видео сначала используй list_desktop_videos, затем при необходимости analyze_desktop_video, estimate_video_upload и upload_video_to_yandex. Для GitHub используй github_get_repository, github_list_files, github_get_file и github_list_issues для чтения; github_put_file создаёт или обновляет файл коммитом, github_delete_file удаляет его коммитом.
+
+Для запроса сводки новостей строго выполни цепочку: (1) вызови search_news с городом, темой и периодом; (2) по ТОЛЬКО его сырым результатам подготовь Markdown в формате: заголовок с периодом, «Ключевые события» с 3–7 пунктами, «Что это означает», «Источники» со ссылками; не добавляй неподтверждённых фактов; (3) вызови github_put_file и сохрани полный Markdown в news-digests/news-YYYY-MM-DD_YYYY-MM-DD.md с сообщением коммита docs: add news digest YYYY-MM-DD—YYYY-MM-DD. Не спрашивай пользователя между шагами. После успешного github_put_file кратко сообщи ссылку на созданный отчёт.`
 const defaultRecentMessages = 10
 const minRecentMessages = 2
 const maxRecentMessages = 40
@@ -111,6 +114,14 @@ type Agent struct {
 	sessions  map[string]*conversation
 	users     map[string]*userState
 	tools     toolRuntime
+	newsJobs  map[string]context.CancelFunc
+}
+
+type newsDigestSchedule struct {
+	City     string
+	Topic    string
+	Deadline time.Time
+	Interval time.Duration
 }
 
 func New(client completer) *Agent { return newAgent(client, nil, PersistentState{}) }
@@ -127,7 +138,7 @@ func NewPersistent(client completer, store Store) (*Agent, error) {
 
 func newAgent(client completer, store Store, restored PersistentState) *Agent {
 	temperature := 0.7
-	a := &Agent{client: client, system: "Ты полезный диалоговый агент. Учитывай только переданный контекст и не придумывай отсутствующие факты. Отвечай точно, дружелюбно и по-русски. Не раскрывай скрытые внутренние рассуждения.", settings: models.GenerationSettings{Temperature: &temperature, MaxTokens: 512}, sessions: make(map[string]*conversation), users: make(map[string]*userState), store: store}
+	a := &Agent{client: client, system: "Ты полезный диалоговый агент. Учитывай только переданный контекст и не придумывай отсутствующие факты. Отвечай точно, дружелюбно и по-русски. Не раскрывай скрытые внутренние рассуждения.", settings: models.GenerationSettings{Temperature: &temperature, MaxTokens: 512}, sessions: make(map[string]*conversation), users: make(map[string]*userState), store: store, newsJobs: make(map[string]context.CancelFunc)}
 	for id, saved := range restored.Users {
 		profiles := make(map[string]models.UserProfile, len(saved.Profiles))
 		for profileID, profile := range saved.Profiles {
@@ -228,6 +239,40 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 	if c.task.Status == models.TaskPaused {
 		return a.respondWhileTaskPausedLocked(c, u, message)
 	}
+	if stopNewsDigestRequest(message) {
+		a.mu.Lock()
+		cancel, exists := a.newsJobs[sessionID]
+		if exists {
+			delete(a.newsJobs, sessionID)
+		}
+		a.mu.Unlock()
+		if exists {
+			cancel()
+		}
+		answer := "Сбор новостей остановлен. Уже собранные данные не будут отправлены в GitHub."
+		c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "user", Content: message}, models.ChatMessage{Role: "assistant", Content: answer}))
+		if err := a.save(); err != nil {
+			return models.AgentResponse{}, ErrHistorySave
+		}
+		return a.responseLocked(c, u, answer, nil, a.tokenReportLocked(c, nil, message, models.ModelUsage{})), nil
+	}
+	if schedule, ok := parseNewsDigestSchedule(message, time.Now()); ok {
+		c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "user", Content: message}))
+		started := fmt.Sprintf("Запустил сбор новостей: %s, каждые %s, до %s (МСК). Этапы будут появляться здесь автоматически.", schedule.City, humanDuration(schedule.Interval), schedule.Deadline.In(moscowLocation()).Format("15:04"))
+		c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "assistant", Content: started}))
+		if err := a.save(); err != nil {
+			return models.AgentResponse{}, ErrHistorySave
+		}
+		jobCtx, cancel := context.WithCancel(context.Background())
+		a.mu.Lock()
+		if previous := a.newsJobs[sessionID]; previous != nil {
+			previous()
+		}
+		a.newsJobs[sessionID] = cancel
+		a.mu.Unlock()
+		go a.runNewsDigest(jobCtx, sessionID, userID, schedule)
+		return a.responseLocked(c, u, started, nil, a.tokenReportLocked(c, nil, message, models.ModelUsage{})), nil
+	}
 	previous := copyMessages(c.activeMessagesLocked())
 	toolTurn := a.tools != nil && (toolIntent(message) || toolFollowupIntent(message, previous) || awaitingToolConfirmation(previous))
 	plannerTurn := plannerEnabled(c) && !toolTurn
@@ -266,14 +311,7 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		c.task = previousTask
 		return models.AgentResponse{}, err
 	}
-	weatherClearWasPending := c.weatherClearConfirmationPending
-	if weatherClearRequest(message) {
-		// The initial deletion request always starts a two-step flow. The model
-		// interprets the next user reply, so no exact acknowledgement phrase is
-		// required here.
-		c.weatherClearConfirmationPending = true
-	}
-	completion, err := a.completeLocked(workCtx, c.model, request, plannerTurn, toolTurn, message, weatherClearWasPending)
+	completion, err := a.completeLocked(workCtx, c.model, request, plannerTurn, toolTurn, message, false)
 	pauseRequested := c.finishWork()
 	if pauseRequested {
 		return a.respondAfterActivePauseLocked(c, u, previous, beforeFacts, message)
@@ -284,12 +322,12 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		c.task = previousTask
 		return models.AgentResponse{}, err
 	}
-	if weatherHistoryWasCleared(completion.ToolExecutions) {
-		c.weatherClearConfirmationPending = false
-	}
 	answer := completion.Answer
 	if plannerTurn {
 		answer, c.task = applyPlannerCompletion(c.task, completion.Answer, message)
+	}
+	for _, execution := range completion.ToolExecutions {
+		c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "assistant", Content: formatToolExecutionForChat(execution)}))
 	}
 	c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "assistant", Content: answer}))
 	c.appendUsageLocked(completion.Usage)
@@ -305,6 +343,188 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 	response := a.responseLocked(c, u, answer, request, report)
 	response.ToolExecutions = append([]models.ToolExecution(nil), completion.ToolExecutions...)
 	return response, nil
+}
+
+func moscowLocation() *time.Location {
+	location, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		return time.FixedZone("MSK", 3*60*60)
+	}
+	return location
+}
+
+func parseNewsDigestSchedule(message string, now time.Time) (newsDigestSchedule, bool) {
+	lower := strings.ToLower(message)
+	if !strings.Contains(lower, "сводк") || !strings.Contains(lower, "новост") || !strings.Contains(lower, "к ") {
+		return newsDigestSchedule{}, false
+	}
+	city := "Москва"
+	if strings.Contains(lower, "в москве") || strings.Contains(lower, "москва") {
+		city = "Москва"
+	} else {
+		return newsDigestSchedule{}, false
+	}
+	hourMatch := regexp.MustCompile(`(?:к|до)\s*(\d{1,2})(?::(\d{2}))?(?:\s*(?:час|ч\b))?`).FindStringSubmatch(lower)
+	if len(hourMatch) == 0 {
+		return newsDigestSchedule{}, false
+	}
+	hour, minute := 0, 0
+	fmt.Sscan(hourMatch[1], &hour)
+	if hourMatch[2] != "" {
+		fmt.Sscan(hourMatch[2], &minute)
+	}
+	if hour > 23 || minute > 59 {
+		return newsDigestSchedule{}, false
+	}
+	interval := time.Hour
+	if strings.Contains(lower, "раз в минут") || strings.Contains(lower, "раз в пять минут") {
+		interval = 5 * time.Minute
+	} else if match := regexp.MustCompile(`раз\s+в\s+(\d+)\s*(?:минут|мин)`).FindStringSubmatch(lower); len(match) > 0 {
+		var minutes int
+		fmt.Sscan(match[1], &minutes)
+		if minutes > 0 && minutes < 5 {
+			minutes = 5
+		}
+		if minutes <= 60 {
+			interval = time.Duration(minutes) * time.Minute
+		}
+	} else if match := regexp.MustCompile(`раз\s+в\s+(\d+)\s*(?:час|ч)`).FindStringSubmatch(lower); len(match) > 0 {
+		var hours int
+		fmt.Sscan(match[1], &hours)
+		if hours > 0 && hours <= 24 {
+			interval = time.Duration(hours) * time.Hour
+		}
+	}
+	location := moscowLocation()
+	localNow := now.In(location)
+	deadline := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), hour, minute, 0, 0, location)
+	if !deadline.After(localNow) {
+		deadline = deadline.AddDate(0, 0, 1)
+	}
+	return newsDigestSchedule{City: city, Topic: "", Deadline: deadline, Interval: interval}, true
+}
+
+func humanDuration(value time.Duration) string {
+	if value == time.Hour {
+		return "час"
+	}
+	if value < time.Hour {
+		return fmt.Sprintf("%d мин.", int(value.Minutes()))
+	}
+	return fmt.Sprintf("%d ч.", int(value.Hours()))
+}
+
+func stopNewsDigestRequest(message string) bool {
+	lower := strings.ToLower(message)
+	return (strings.Contains(lower, "останов") || strings.Contains(lower, "отмен") || strings.Contains(lower, "прекрат")) && strings.Contains(lower, "новост")
+}
+
+func (a *Agent) runNewsDigest(parent context.Context, sessionID, userID string, schedule newsDigestSchedule) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	deadlineTimer := time.NewTimer(time.Until(schedule.Deadline))
+	defer deadlineTimer.Stop()
+	var rawBatches []string
+	consecutiveFailures := 0
+	halted := false
+	last := time.Now().In(moscowLocation())
+	collect := func() bool {
+		now := time.Now().In(moscowLocation())
+		result, failed, err := a.tools.CallForModel(ctx, "search_news", map[string]any{"city": schedule.City, "query": schedule.Topic, "from": last.Format("2006-01-02"), "to": now.Format("2006-01-02"), "limit": 10})
+		last = now
+		if err != nil || failed {
+			consecutiveFailures++
+			if consecutiveFailures == 1 {
+				a.appendNewsEvent(sessionID, userID, "Этап MCP — search_news (временно недоступен)\nСледующая попытка будет по расписанию. "+fmt.Sprint(err, " ", result))
+			}
+			if consecutiveFailures >= 3 {
+				a.appendNewsEvent(sessionID, userID, "Сбор новостей автоматически остановлен после трёх неудачных попыток. Новые запросы к источнику больше не отправляются.")
+				halted = true
+				return false
+			}
+			return false
+		}
+		consecutiveFailures = 0
+		rawBatches = append(rawBatches, result)
+		a.appendNewsEvent(sessionID, userID, "Этап MCP — search_news (готово)\nСобраны сырые новости за очередной период.\n"+result)
+		return true
+	}
+	collect()
+	if halted {
+		return
+	}
+	ticker := time.NewTicker(schedule.Interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-parent.Done():
+			return
+		case <-deadlineTimer.C:
+			a.mu.Lock()
+			delete(a.newsJobs, sessionID)
+			a.mu.Unlock()
+			a.appendNewsEvent(sessionID, userID, "Дедлайн сбора достигнут. Формирую итоговую сводку и сохраняю её в GitHub.")
+			a.finishNewsDigest(sessionID, userID, schedule, rawBatches)
+			return
+		case <-ticker.C:
+			collect()
+			if halted {
+				return
+			}
+		}
+	}
+}
+
+func (a *Agent) appendNewsEvent(sessionID, userID, content string) {
+	a.persistMu.Lock()
+	defer a.persistMu.Unlock()
+	c := a.conversationForUser(sessionID, userID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "assistant", Content: content}))
+	_ = a.save()
+}
+
+func (a *Agent) finishNewsDigest(sessionID, userID string, schedule newsDigestSchedule, batches []string) {
+	if len(batches) == 0 {
+		a.appendNewsEvent(sessionID, userID, "Сбор завершён: исходных новостей не получено, файл не создан.")
+		return
+	}
+	if a.tools == nil {
+		a.appendNewsEvent(sessionID, userID, "Сбор завершён: GitHub-инструмент недоступен.")
+		return
+	}
+	path := fmt.Sprintf("news-digests/%s-%s.md", strings.ToLower(strings.ReplaceAll(schedule.City, " ", "-")), schedule.Deadline.In(moscowLocation()).Format("2006-01-02"))
+	prompt := "На основе ТОЛЬКО сырых JSON-данных ниже напиши готовую Markdown-сводку со структурой: заголовок, период, ключевые события, что это означает, источники со ссылками. Не добавляй фактов вне источников и не описывай действия инструментов. Сырые данные:\n" + strings.Join(batches, "\n")
+	finishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	messages := []models.ChatMessage{{Role: "system", Content: "Ты редактор новостной сводки. Не добавляй фактов вне источников."}, {Role: "user", Content: prompt}}
+	var completion models.ModelCompletion
+	var err error
+	if client, ok := a.client.(modelCompleter); ok {
+		completion, err = client.CompleteMessagesModel(finishCtx, models.DeepSeekFlashModel, messages, models.GenerationSettings{MaxTokens: 2400})
+	} else {
+		completion, err = a.client.CompleteMessages(finishCtx, messages, models.GenerationSettings{MaxTokens: 2400})
+	}
+	content := strings.TrimSpace(completion.Answer)
+	if err != nil || content == "" {
+		detail := fmt.Sprint(err)
+		if err == nil {
+			detail = "модель вернула пустую сводку"
+		}
+		a.appendNewsEvent(sessionID, userID, "Сбор завершён, но ИИ не смог подготовить сводку: "+detail)
+		return
+	}
+	result, failed, err := a.tools.CallForModel(finishCtx, "github_put_file", map[string]any{
+		"path":    path,
+		"content": content,
+		"message": fmt.Sprintf("docs: add news digest %s", schedule.Deadline.In(moscowLocation()).Format("2006-01-02")),
+	})
+	if err != nil || failed {
+		a.appendNewsEvent(sessionID, userID, "Этап MCP — github_put_file (ошибка)\n"+fmt.Sprint(err, " ", result))
+		return
+	}
+	a.appendNewsEvent(sessionID, userID, "Этап MCP — github_put_file (готово)\n"+result+"\nСбор завершён и сводка сохранена в "+path)
 }
 
 func (a *Agent) respondAfterActivePauseLocked(c *conversation, u *userState, previous []models.ChatMessage, beforeFacts map[string]string, message string) (models.AgentResponse, error) {
@@ -414,7 +634,7 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 	executions := []models.ToolExecution{}
 	messages := append([]models.ChatMessage(nil), request...)
 	toolContext := toolSystemPrompt
-	if !weatherIntent(latestUserMessage) {
+	if videoIntent(latestUserMessage) {
 		listResult, listIsError, listErr := a.tools.CallForModel(ctx, "list_desktop_videos", map[string]any{})
 		if listErr != nil {
 			return models.ModelCompletion{}, fmt.Errorf("получить список видео через MCP: %w", listErr)
@@ -443,11 +663,7 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 		if len(completion.ToolCalls) == 0 {
 			completion.Usage = total
 			completion.ToolExecutions = executions
-			completion.Answer = groundedGitHubWriteAnswer(
-				groundedUploadAnswer(completion.Answer, executions, explicitUploadConfirmation(latestUserMessage)),
-				executions,
-				explicitGitHubConfirmation(latestUserMessage),
-			)
+			completion.Answer = groundedGitHubWriteAnswer(groundedUploadAnswer(completion.Answer, executions, true), executions, true)
 			return completion, nil
 		}
 		messages = append(messages, models.ChatMessage{Role: "assistant", Content: completion.Answer, ToolCalls: completion.ToolCalls})
@@ -468,43 +684,6 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
 				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
 				continue
-			}
-			if call.Function.Name == "upload_video_to_yandex" && !explicitUploadConfirmation(latestUserMessage) {
-				arguments["confirm"] = false
-				payload, _ := json.Marshal(map[string]any{
-					"isError": true, "error": "confirmation_required",
-					"message":            "Загрузка не выполнена. Попроси пользователя явно подтвердить загрузку выбранного файла в указанную папку.",
-					"requestedArguments": arguments,
-				})
-				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
-				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
-				continue
-			}
-			if call.Function.Name == "upload_video_to_yandex" {
-				arguments["confirm"] = true
-			}
-			if call.Function.Name == "clear_weather_history" && !weatherClearConfirmed {
-				arguments["confirm"] = false
-				payload, _ := json.Marshal(map[string]any{"isError": true, "error": "confirmation_required", "message": "История погоды не очищена. Сообщи число удаляемых измерений (если известно) и попроси пользователя явно подтвердить очистку."})
-				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
-				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
-				continue
-			}
-			if call.Function.Name == "clear_weather_history" {
-				arguments["confirm"] = true
-			}
-			if (call.Function.Name == "github_put_file" || call.Function.Name == "github_delete_file") && !explicitGitHubConfirmation(latestUserMessage) {
-				arguments["confirm"] = false
-				payload, _ := json.Marshal(map[string]any{
-					"isError": true, "error": "confirmation_required",
-					"message": "Запись в GitHub не выполнена. Назови файл, ветку и коммит, затем попроси явное подтверждение пользователя.",
-				})
-				executions = append(executions, models.ToolExecution{Name: call.Function.Name, Arguments: arguments, Result: string(payload), IsError: true})
-				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: string(payload)})
-				continue
-			}
-			if call.Function.Name == "github_put_file" || call.Function.Name == "github_delete_file" {
-				arguments["confirm"] = true
 			}
 			content, isError, toolErr := a.tools.CallForModel(ctx, call.Function.Name, arguments)
 			if toolErr != nil {
@@ -617,12 +796,30 @@ func toolIntent(message string) bool {
 	quota := strings.Contains(message, "помест") || strings.Contains(message, "свобод") || strings.Contains(message, "места") || strings.Contains(message, "квот") || strings.Contains(message, "сколько займ")
 	strongMetadata := strings.Contains(message, "длитель") || strings.Contains(message, "кодек") || strings.Contains(message, "разрешен") || strings.Contains(message, "fps") || strings.Contains(message, "метадан")
 	github := strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "гитаб") || strings.Contains(message, "репозитор") || strings.Contains(message, "issue") || strings.Contains(message, "иссу") || strings.Contains(message, "pull request") || strings.Contains(message, "пулл")
+	news := strings.Contains(message, "новост") || strings.Contains(message, "новостн") || strings.Contains(message, "сводк") || strings.Contains(message, "дайджест") || strings.Contains(message, "за период")
 	clearWeather := strings.Contains(message, "очист") && (strings.Contains(message, "сводк") || strings.Contains(message, "истори"))
-	return clearWeather || weatherIntent(message) || github || (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
+	return clearWeather || weatherIntent(message) || news || github || (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
+}
+
+func videoIntent(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "видео") || strings.Contains(message, "ролик") || strings.Contains(message, ".mov") || strings.Contains(message, ".mp4") || strings.Contains(message, "рабочий стол") || strings.Contains(message, "desktop")
+}
+
+func formatToolExecutionForChat(execution models.ToolExecution) string {
+	state := "готово"
+	if execution.IsError {
+		state = "ошибка"
+	}
+	arguments, _ := json.Marshal(execution.Arguments)
+	return "Этап MCP — " + execution.Name + " (" + state + ")\nАргументы: " + string(arguments) + "\nРезультат: " + execution.Result
 }
 
 func weatherIntent(message string) bool {
 	message = strings.ToLower(message)
+	if strings.Contains(message, "новост") || strings.Contains(message, "дайджест") {
+		return false
+	}
 	return strings.Contains(message, "погод") || strings.Contains(message, "температур") || strings.Contains(message, "дожд") || strings.Contains(message, "осадк") || strings.Contains(message, "ветер") || strings.Contains(message, "градус") || strings.Contains(message, "москв") || (strings.Contains(message, "собира") && (strings.Contains(message, "минут") || strings.Contains(message, "час"))) || (strings.Contains(message, "собран") && (strings.Contains(message, "информац") || strings.Contains(message, "значен"))) || ((strings.Contains(message, "останов") || strings.Contains(message, "выключ") || strings.Contains(message, "приостанов")) && (strings.Contains(message, "сбор") || strings.Contains(message, "планиров") || strings.Contains(message, "измерен")))
 }
 

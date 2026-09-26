@@ -43,7 +43,7 @@ func TestWeatherToolsPersistAndAggregateObservations(t *testing.T) {
 	if !strings.Contains(summary, `"measurementCount":1`) || !strings.Contains(summary, `"precipitationMM":0.4`) {
 		t.Fatalf("unexpected summary: %s", summary)
 	}
-	cleared, isError, err := bridge.CallForModel(context.Background(), "clear_weather_history", map[string]any{"confirm": true})
+	cleared, isError, err := bridge.CallForModel(context.Background(), "clear_weather_history", map[string]any{})
 	if err != nil || isError || !strings.Contains(cleared, `"clearedMeasurements":1`) {
 		t.Fatalf("clear: result=%s isError=%v err=%v", cleared, isError, err)
 	}

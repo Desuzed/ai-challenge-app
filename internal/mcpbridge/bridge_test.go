@@ -94,7 +94,7 @@ func TestUploadToolSendsVideoDirectlyToYandexDisk(t *testing.T) {
 	defer bridge.Close()
 
 	result, err := bridge.Call(context.Background(), "upload_video_to_yandex", map[string]any{
-		"videoName": "demo.mov", "lessonFolder": "lession 16", "confirm": true,
+		"videoName": "demo.mov", "lessonFolder": "lession 16",
 	})
 	if err != nil || result.IsError {
 		t.Fatalf("upload result = %#v, err = %v", result, err)
@@ -161,7 +161,7 @@ func TestUploadTreatsSameExistingDiskFileAsSuccess(t *testing.T) {
 	}
 	defer bridge.Close()
 	result, err := bridge.Call(context.Background(), "upload_video_to_yandex", map[string]any{
-		"videoName": "demo.mov", "lessonFolder": "lession 16", "confirm": true,
+		"videoName": "demo.mov", "lessonFolder": "lession 16",
 	})
 	if err != nil || result.IsError {
 		t.Fatalf("upload result = %#v, err = %v", result, err)

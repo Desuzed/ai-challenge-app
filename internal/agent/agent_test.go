@@ -103,12 +103,9 @@ func (f *fakeToolRuntime) CallForModel(_ context.Context, name string, args map[
 	return `{"diskPath":"disk:/AI Challenge/lession 16/demo.mov","sizeBytes":100}`, false, nil
 }
 
-func TestAgentUsesMCPAndRequiresConfirmationBeforeUpload(t *testing.T) {
+func TestAgentUsesMCPAndUploadsWithoutConfirmation(t *testing.T) {
 	client := &scriptedToolClient{completions: []models.ModelCompletion{
-		{ToolCalls: []models.ToolCall{{ID: "upload-1", Type: "function", Function: models.ToolCallFunction{Name: "upload_video_to_yandex", Arguments: `{"videoName":"demo.mov","lessonFolder":"lession 16","confirm":true}`}}}},
-		{Answer: "Нашёл demo.mov. Подтвердите загрузку в AI Challenge/lession 16."},
-		{ToolCalls: []models.ToolCall{{ID: "upload-2", Type: "function", Function: models.ToolCallFunction{Name: "upload_video_to_yandex", Arguments: `{"videoName":"demo.mov","lessonFolder":"lession 16","confirm":false}`}}}},
-		{Answer: "Видео загружено в disk:/AI Challenge/lession 16/demo.mov."},
+		{ToolCalls: []models.ToolCall{{ID: "upload-1", Type: "function", Function: models.ToolCallFunction{Name: "upload_video_to_yandex", Arguments: `{"videoName":"demo.mov","lessonFolder":"lession 16"}`}}}},
 	}}
 	runtime := &fakeToolRuntime{}
 	a := New(client)
@@ -118,25 +115,85 @@ func TestAgentUsesMCPAndRequiresConfirmationBeforeUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(first.Answer, "Подтвердите") {
-		t.Fatalf("first answer = %q", first.Answer)
+	if !strings.Contains(first.Answer, "действительно загружено") {
+		t.Fatalf("answer = %q", first.Answer)
 	}
-	if len(runtime.calls) != 1 || runtime.calls[0].name != "list_desktop_videos" {
-		t.Fatalf("calls before confirmation = %#v", runtime.calls)
-	}
-
-	second, err := a.Respond(context.Background(), "tool-session", "Подтверждаю, загружай")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(second.Answer, "действительно загружено") {
-		t.Fatalf("second answer = %q", second.Answer)
-	}
-	if len(runtime.calls) != 3 || runtime.calls[1].name != "list_desktop_videos" || runtime.calls[2].name != "upload_video_to_yandex" || runtime.calls[2].args["confirm"] != true {
-		t.Fatalf("calls after confirmation = %#v", runtime.calls)
+	if len(runtime.calls) != 2 || runtime.calls[0].name != "list_desktop_videos" || runtime.calls[1].name != "upload_video_to_yandex" {
+		t.Fatalf("calls = %#v", runtime.calls)
 	}
 	if len(client.tools) == 0 || len(client.tools[0]) != 2 {
 		t.Fatalf("tools passed to model = %#v", client.tools)
+	}
+}
+
+type newsPipelineRuntime struct {
+	calls []string
+	args  []map[string]any
+}
+
+func (r *newsPipelineRuntime) ToolsForModel(context.Context) ([]models.ToolDefinition, error) {
+	return []models.ToolDefinition{
+		{Type: "function", Function: models.ToolFunction{Name: "search_news", Parameters: map[string]any{"type": "object"}}},
+		{Type: "function", Function: models.ToolFunction{Name: "github_put_file", Parameters: map[string]any{"type": "object"}}},
+	}, nil
+}
+
+func (r *newsPipelineRuntime) CallForModel(_ context.Context, name string, args map[string]any) (string, bool, error) {
+	r.calls = append(r.calls, name)
+	copyArgs := make(map[string]any, len(args))
+	for key, value := range args {
+		copyArgs[key] = value
+	}
+	r.args = append(r.args, copyArgs)
+	if name == "search_news" {
+		return `{"articles":[{"title":"Новость","url":"https://example.test/news"}]}`, false, nil
+	}
+	return `{"path":"news-digests/news.md","branch":"main","commitSha":"abc123","url":"https://github.com/acme/demo/blob/main/news-digests/news.md"}`, false, nil
+}
+
+func TestFinishNewsDigestSummarizesThenSavesWithServerArguments(t *testing.T) {
+	client := &fakeCompleter{answer: "# Новости Москвы\n\n## Ключевые события\n\n- Новость из источника."}
+	runtime := &newsPipelineRuntime{}
+	a := New(client)
+	a.SetToolRuntime(runtime)
+	deadline := time.Date(2026, time.September, 26, 23, 20, 0, 0, moscowLocation())
+	a.finishNewsDigest("digest-session", "digest-user", newsDigestSchedule{City: "Москва", Deadline: deadline}, []string{`{"articles":[{"title":"Новость","url":"https://example.test/news"}]}`})
+
+	if !reflect.DeepEqual(runtime.calls, []string{"github_put_file"}) {
+		t.Fatalf("calls=%#v", runtime.calls)
+	}
+	if got, want := runtime.args[0]["path"], "news-digests/москва-2026-09-26.md"; got != want {
+		t.Fatalf("path=%q, want %q", got, want)
+	}
+	if got := runtime.args[0]["content"]; !strings.Contains(got.(string), "Ключевые события") {
+		t.Fatalf("content=%q", got)
+	}
+	conversation := a.sessions["digest-session"]
+	if conversation == nil || !strings.Contains(conversation.messages[len(conversation.messages)-1].Content, "сводка сохранена") {
+		t.Fatalf("messages=%#v", conversation.messages)
+	}
+}
+
+func TestAgentRunsNewsSearchThenWritesDigestWithoutConfirmation(t *testing.T) {
+	client := &scriptedToolClient{completions: []models.ModelCompletion{
+		{ToolCalls: []models.ToolCall{{ID: "search", Type: "function", Function: models.ToolCallFunction{Name: "search_news", Arguments: `{"city":"Москва","from":"2026-09-01","to":"2026-09-02"}`}}}},
+		{ToolCalls: []models.ToolCall{{ID: "save", Type: "function", Function: models.ToolCallFunction{Name: "github_put_file", Arguments: `{"path":"news-digests/news.md","content":"# Сводка","message":"docs: add news digest"}`}}}},
+	}}
+	runtime := &newsPipelineRuntime{}
+	a := New(client)
+	a.SetToolRuntime(runtime)
+	response, err := a.Respond(context.Background(), "news-session", "Собери новостную сводку Москвы за 1 сентября")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(runtime.calls, []string{"search_news", "github_put_file"}) {
+		t.Fatalf("calls=%#v", runtime.calls)
+	}
+	if !strings.Contains(response.Answer, "abc123") {
+		t.Fatalf("answer=%q", response.Answer)
+	}
+	if len(response.Messages) < 4 || !strings.Contains(response.Messages[len(response.Messages)-2].Content, "github_put_file") {
+		t.Fatalf("messages=%#v", response.Messages)
 	}
 }
 
@@ -155,6 +212,13 @@ func TestToolIntentIncludesReadOnlyDesktopQuestions(t *testing.T) {
 	}
 	if toolIntent("Расскажи, что такое рабочий стол операционной системы") {
 		t.Fatal("generic desktop question must not activate MCP")
+	}
+}
+
+func TestParseNewsDigestScheduleUnderstandsClockTimeAndWords(t *testing.T) {
+	schedule, ok := parseNewsDigestSchedule("Собери сводку новостей к 22:30 с периодичностью раз в пять минут в Москве", time.Date(2026, 9, 26, 21, 0, 0, 0, moscowLocation()))
+	if !ok || schedule.City != "Москва" || schedule.Interval != 5*time.Minute || schedule.Deadline.Hour() != 22 || schedule.Deadline.Minute() != 30 {
+		t.Fatalf("schedule=%#v ok=%v", schedule, ok)
 	}
 }
 

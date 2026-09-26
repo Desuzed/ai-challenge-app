@@ -17,6 +17,7 @@ import (
 	"ai-challenge-app/internal/githubmcp"
 	"ai-challenge-app/internal/handlers"
 	"ai-challenge-app/internal/mcpbridge"
+	"ai-challenge-app/internal/newsmcp"
 	"ai-challenge-app/internal/openrouter"
 	"ai-challenge-app/internal/weathermcp"
 )
@@ -81,7 +82,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("connect Weather MCP: %v", err)
 	}
-	mcpCatalog := mcpbridge.NewCatalog(yandexBridge, githubBridge, weatherBridge)
+	newsBridge, err := newsmcp.New(context.Background(), newsmcp.Config{})
+	if err != nil {
+		log.Fatalf("connect News MCP: %v", err)
+	}
+	mcpCatalog := mcpbridge.NewCatalog(yandexBridge, githubBridge, weatherBridge, newsBridge)
 	defer mcpCatalog.Close()
 	persistentAgent.SetToolRuntime(mcpCatalog)
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
