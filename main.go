@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"ai-challenge-app/internal/handlers"
 	"ai-challenge-app/internal/mcpbridge"
 	"ai-challenge-app/internal/openrouter"
+	"ai-challenge-app/internal/weathermcp"
 )
 
 const (
@@ -75,7 +77,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("connect GitHub MCP: %v", err)
 	}
-	mcpCatalog := mcpbridge.NewCatalog(yandexBridge, githubBridge)
+	weatherBridge, err := weathermcp.New(context.Background(), weathermcp.Config{DataFile: localSetting("WEATHER_DATA_FILE", os.Getenv, os.ReadFile), Interval: weatherInterval()})
+	if err != nil {
+		log.Fatalf("connect Weather MCP: %v", err)
+	}
+	mcpCatalog := mcpbridge.NewCatalog(yandexBridge, githubBridge, weatherBridge)
 	defer mcpCatalog.Close()
 	persistentAgent.SetToolRuntime(mcpCatalog)
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))
@@ -103,6 +109,14 @@ func main() {
 
 	log.Printf("AI Challenge App listening on http://localhost:%s", port)
 	log.Fatal(server.ListenAndServe())
+}
+
+func weatherInterval() time.Duration {
+	seconds, err := strconv.Atoi(localSetting("WEATHER_COLLECTION_INTERVAL_SECONDS", os.Getenv, os.ReadFile))
+	if err != nil || seconds < 1 {
+		return time.Minute
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func loadDeepSeekAPIKey(lookupEnv func(string) string, readFile func(string) ([]byte, error)) (string, error) {
