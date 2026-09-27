@@ -436,7 +436,31 @@ func (b *Bridge) putFile(ctx context.Context, in putFileInput) (putFileOutput, e
 	if err != nil {
 		return putFileOutput{}, err
 	}
+	if !validCommitSHA(response.Commit.SHA) || !validGitHubURL(response.Content.HTMLURL) {
+		return putFileOutput{}, errors.New("GitHub API did not return a verifiable commit SHA and file URL")
+	}
+	verified, err := b.getFile(ctx, in.Path, branch)
+	if err != nil || verified.Content != in.Content {
+		return putFileOutput{}, errors.New("GitHub did not confirm the saved file content")
+	}
 	return putFileOutput{Path: in.Path, Branch: branch, CommitSHA: response.Commit.SHA, URL: response.Content.HTMLURL, Created: created}, nil
+}
+
+func validCommitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validGitHubURL(value string) bool {
+	u, err := url.Parse(value)
+	return err == nil && u.Scheme == "https" && strings.EqualFold(u.Host, "github.com") && strings.HasPrefix(u.Path, "/")
 }
 
 func (b *Bridge) deleteFile(ctx context.Context, in deleteFileInput) (deleteFileOutput, error) {
