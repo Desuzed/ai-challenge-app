@@ -58,6 +58,17 @@ func TestBridgeConnectsListsAndCallsTools(t *testing.T) {
 	}
 }
 
+func TestCatalogRoutesCityWeatherToWeatherServer(t *testing.T) {
+	for _, name := range []string{"collect_weather", "get_city_weather", "weather_latest", "weather_summary"} {
+		if !isWeatherTool(name) {
+			t.Fatalf("%s must be routed to the weather MCP", name)
+		}
+	}
+	if isWeatherTool("list_desktop_videos") {
+		t.Fatal("Yandex Disk tool must not be routed to the weather MCP")
+	}
+}
+
 func TestUploadToolSendsVideoDirectlyToYandexDisk(t *testing.T) {
 	directory := t.TempDir()
 	videoBody := []byte("not-a-real-video")
