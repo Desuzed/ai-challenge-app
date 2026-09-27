@@ -57,15 +57,17 @@ type scriptedToolClient struct {
 	completions []models.ModelCompletion
 	requests    [][]models.ChatMessage
 	tools       [][]models.ToolDefinition
+	settings    []models.GenerationSettings
 }
 
 func (f *scriptedToolClient) CompleteMessages(_ context.Context, _ []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
 	return models.ModelCompletion{}, errors.New("unexpected completion without tools")
 }
 
-func (f *scriptedToolClient) CompleteMessagesModelWithTools(_ context.Context, _ string, messages []models.ChatMessage, _ models.GenerationSettings, tools []models.ToolDefinition) (models.ModelCompletion, error) {
+func (f *scriptedToolClient) CompleteMessagesModelWithTools(_ context.Context, _ string, messages []models.ChatMessage, settings models.GenerationSettings, tools []models.ToolDefinition) (models.ModelCompletion, error) {
 	f.requests = append(f.requests, copyMessages(messages))
 	f.tools = append(f.tools, append([]models.ToolDefinition(nil), tools...))
+	f.settings = append(f.settings, settings)
 	if len(f.completions) == 0 {
 		return models.ModelCompletion{}, errors.New("no scripted completion")
 	}
@@ -121,7 +123,7 @@ func TestAgentUsesMCPAndUploadsWithoutConfirmation(t *testing.T) {
 	if len(runtime.calls) != 2 || runtime.calls[0].name != "list_desktop_videos" || runtime.calls[1].name != "upload_video_to_yandex" {
 		t.Fatalf("calls = %#v", runtime.calls)
 	}
-	if len(client.tools) == 0 || len(client.tools[0]) != 2 {
+	if len(client.tools) == 0 || len(client.tools[0]) != 3 || client.tools[0][2].Function.Name != "save_current_report_to_github" {
 		t.Fatalf("tools passed to model = %#v", client.tools)
 	}
 }
@@ -148,7 +150,7 @@ func (r *newsPipelineRuntime) CallForModel(_ context.Context, name string, args 
 	if name == "search_news" {
 		return `{"articles":[{"title":"Новость","url":"https://example.test/news"}]}`, false, nil
 	}
-	return `{"path":"news-digests/news.md","branch":"main","commitSha":"abc123","url":"https://github.com/acme/demo/blob/main/news-digests/news.md"}`, false, nil
+	return `{"path":"reports/news.md","branch":"main","commitSha":"0123456789abcdef0123456789abcdef01234567","url":"https://github.com/acme/demo/blob/main/reports/news.md"}`, false, nil
 }
 
 func TestFinishNewsDigestSummarizesThenSavesWithServerArguments(t *testing.T) {
@@ -162,7 +164,7 @@ func TestFinishNewsDigestSummarizesThenSavesWithServerArguments(t *testing.T) {
 	if !reflect.DeepEqual(runtime.calls, []string{"github_put_file"}) {
 		t.Fatalf("calls=%#v", runtime.calls)
 	}
-	if got, want := runtime.args[0]["path"], "news-digests/москва-2026-09-26.md"; got != want {
+	if got, want := runtime.args[0]["path"], "reports/москва-2026-09-26.md"; got != want {
 		t.Fatalf("path=%q, want %q", got, want)
 	}
 	if got := runtime.args[0]["content"]; !strings.Contains(got.(string), "Ключевые события") {
@@ -177,7 +179,7 @@ func TestFinishNewsDigestSummarizesThenSavesWithServerArguments(t *testing.T) {
 func TestAgentRunsNewsSearchThenWritesDigestWithoutConfirmation(t *testing.T) {
 	client := &scriptedToolClient{completions: []models.ModelCompletion{
 		{ToolCalls: []models.ToolCall{{ID: "search", Type: "function", Function: models.ToolCallFunction{Name: "search_news", Arguments: `{"city":"Москва","from":"2026-09-01","to":"2026-09-02"}`}}}},
-		{ToolCalls: []models.ToolCall{{ID: "save", Type: "function", Function: models.ToolCallFunction{Name: "github_put_file", Arguments: `{"path":"news-digests/news.md","content":"# Сводка","message":"docs: add news digest"}`}}}},
+		{ToolCalls: []models.ToolCall{{ID: "save", Type: "function", Function: models.ToolCallFunction{Name: "github_put_file", Arguments: `{"path":"reports/news.md","content":"# Сводка","message":"docs: add news digest"}`}}}},
 	}}
 	runtime := &newsPipelineRuntime{}
 	a := New(client)
@@ -189,11 +191,200 @@ func TestAgentRunsNewsSearchThenWritesDigestWithoutConfirmation(t *testing.T) {
 	if !reflect.DeepEqual(runtime.calls, []string{"search_news", "github_put_file"}) {
 		t.Fatalf("calls=%#v", runtime.calls)
 	}
-	if !strings.Contains(response.Answer, "abc123") {
+	if !strings.Contains(response.Answer, "0123456789abcdef0123456789abcdef01234567") {
 		t.Fatalf("answer=%q", response.Answer)
 	}
 	if len(response.Messages) < 4 || !strings.Contains(response.Messages[len(response.Messages)-2].Content, "github_put_file") {
 		t.Fatalf("messages=%#v", response.Messages)
+	}
+}
+
+type orchestrationRuntime struct {
+	calls []string
+	args  []map[string]any
+}
+
+func (r *orchestrationRuntime) ToolsForModel(context.Context) ([]models.ToolDefinition, error) {
+	return []models.ToolDefinition{
+		{Type: "function", Function: models.ToolFunction{Name: "collect_weather", Parameters: map[string]any{"type": "object"}}},
+		{Type: "function", Function: models.ToolFunction{Name: "weather_latest", Parameters: map[string]any{"type": "object"}}},
+		{Type: "function", Function: models.ToolFunction{Name: "get_city_weather", Parameters: map[string]any{"type": "object"}}},
+		{Type: "function", Function: models.ToolFunction{Name: "search_news", Parameters: map[string]any{"type": "object"}}},
+		{Type: "function", Function: models.ToolFunction{Name: "github_put_file", Parameters: map[string]any{"type": "object"}}},
+	}, nil
+}
+
+func (r *orchestrationRuntime) CallForModel(_ context.Context, name string, args map[string]any) (string, bool, error) {
+	r.calls = append(r.calls, name)
+	copyArgs := make(map[string]any, len(args))
+	for key, value := range args {
+		copyArgs[key] = value
+	}
+	r.args = append(r.args, copyArgs)
+	switch name {
+	case "collect_weather":
+		return `{"collectedAt":"2026-09-27T10:00:00+03:00","temperatureC":12}`, false, nil
+	case "weather_latest":
+		return `{"collectedAt":"2026-09-27T10:00:00+03:00","condition":"облачно","temperatureC":12}`, false, nil
+	case "get_city_weather":
+		return `{"location":"Вологда","observation":{"condition":"ясно","temperatureC":9}}`, false, nil
+	case "search_news":
+		return `{"articles":[{"title":"Городская новость","url":"https://example.test/news"}]}`, false, nil
+	default:
+		return `{"path":"reports/moscow-briefing-2026-09-27.md","branch":"main","commitSha":"89abcdef0123456789abcdef0123456789abcdef","url":"https://github.com/acme/demo/blob/main/reports/moscow-briefing-2026-09-27.md"}`, false, nil
+	}
+}
+
+func TestAgentOrchestratesWeatherNewsAndGitHubReport(t *testing.T) {
+	client := &scriptedToolClient{completions: []models.ModelCompletion{
+		{ToolCalls: []models.ToolCall{{ID: "collect", Type: "function", Function: models.ToolCallFunction{Name: "collect_weather", Arguments: `{}`}}}},
+		{ToolCalls: []models.ToolCall{{ID: "latest", Type: "function", Function: models.ToolCallFunction{Name: "weather_latest", Arguments: `{}`}}}},
+		{ToolCalls: []models.ToolCall{{ID: "news", Type: "function", Function: models.ToolCallFunction{Name: "search_news", Arguments: `{"city":"Москва","query":"","from":"2026-09-27","to":"2026-09-27"}`}}}},
+		{ToolCalls: []models.ToolCall{{ID: "save", Type: "function", Function: models.ToolCallFunction{Name: "github_put_file", Arguments: `{"path":"reports/moscow-briefing-2026-09-27.md","content":"# Брифинг Москвы\n\n## Погода\n\nОблачно, 12 °C.\n\n## Ключевые события\n\n- Городская новость\n\n## Источники\n\n- https://example.test/news","message":"docs: add Moscow briefing 2026-09-27"}`}}}},
+	}}
+	runtime := &orchestrationRuntime{}
+	a := New(client)
+	a.SetToolRuntime(runtime)
+
+	response, err := a.Respond(context.Background(), "orchestration-session", "Подготовь ежедневный брифинг по погоде и событиям Москвы и положи отчёт в репозиторий")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runtime.calls, []string{"collect_weather", "weather_latest", "search_news", "github_put_file"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls=%#v, want=%#v", got, want)
+	}
+	if content := runtime.args[3]["content"].(string); !strings.Contains(content, "Погода") || !strings.Contains(content, "Городская новость") {
+		t.Fatalf("report content=%q", content)
+	}
+	if !strings.Contains(response.Answer, "89abcdef0123456789abcdef0123456789abcdef") {
+		t.Fatalf("answer=%q", response.Answer)
+	}
+}
+
+func TestToolIntentRecognizesReportWordingVariants(t *testing.T) {
+	for _, message := range []string{
+		"Сделай отчёт о погоде и новостях Москвы, сохрани его в GitHub",
+		"Нужен городской брифинг: температура, события за сегодня и файл в репозитории",
+		"Подготовь ежедневную сводку по Москве и закоммить в гитхаб",
+		"Собери погодные данные и важные события столицы в Markdown для репозитория",
+	} {
+		if !toolIntent(message) {
+			t.Fatalf("toolIntent(%q) = false", message)
+		}
+	}
+}
+
+func TestBriefingIntentIncludesPlainWeatherAndNewsQuestion(t *testing.T) {
+	if !briefingIntent("Напиши погоду в Вологде и новости в Новой Зеландии") {
+		t.Fatal("weather-and-news request must reserve the briefing response budget")
+	}
+}
+
+func TestGitHubSaveIsOnlyStagedForExplicitRequestAndAcceptsShortAgreement(t *testing.T) {
+	if shouldStageGitHubReport("Напиши погоду и новости в Лондоне", nil, "# Лондон") {
+		t.Fatal("plain weather-and-news request must not create a pending GitHub report")
+	}
+	if !shouldStageGitHubReport("Покажи брифинг с погодой и новостями, я подтвержу и ты оформишь его в GitHub", nil, "# Лондон") {
+		t.Fatal("deferred explicit GitHub request must create a pending report")
+	}
+	for _, message := range []string{"да", "ок", "окей", "подтверждаю", "хорошо", "сохраняй"} {
+		if !reportSaveConfirmed(message) {
+			t.Fatalf("%q must confirm a pending report", message)
+		}
+	}
+}
+
+func TestSaveExistingReportIntentFindsLatestMarkdownReport(t *testing.T) {
+	if !saveExistingReportIntent("Сохрани эту сводку как отчёт в GitHub") {
+		t.Fatal("explicit request to save the shown report must be recognized")
+	}
+	if saveExistingReportIntent("Напиши погоду в Лондоне") {
+		t.Fatal("ordinary weather request must not save anything")
+	}
+	messages := []models.ChatMessage{
+		{Role: "assistant", Content: "Этап MCP — get_city_weather (готово)"},
+		{Role: "assistant", Content: "# Погода в Лондоне\n\n22 °C"},
+	}
+	if got := latestReportContent(messages); got != "# Погода в Лондоне\n\n22 °C" {
+		t.Fatalf("latest report=%q", got)
+	}
+}
+
+func TestAgentSavesPreviousReportViaVirtualToolForEnglishRequest(t *testing.T) {
+	client := &scriptedToolClient{completions: []models.ModelCompletion{
+		{ToolCalls: []models.ToolCall{{ID: "save", Type: "function", Function: models.ToolCallFunction{Name: "save_current_report_to_github", Arguments: `{}`}}}},
+	}}
+	runtime := &orchestrationRuntime{}
+	a := New(client)
+	a.SetToolRuntime(runtime)
+	conversation := a.conversationForUser("save-english", "save-english")
+	conversation.setActiveMessagesLocked([]models.ChatMessage{{Role: "assistant", Content: "# Погода в Лондоне\n\n22 °C"}})
+
+	response, err := a.Respond(context.Background(), "save-english", "save to GitHub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runtime.calls, []string{"github_put_file"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls=%#v, want=%#v", got, want)
+	}
+	if got := runtime.args[0]["content"]; got != "# Погода в Лондоне\n\n22 °C" {
+		t.Fatalf("saved content=%q", got)
+	}
+	if !strings.Contains(response.Answer, "89abcdef0123456789abcdef0123456789abcdef") {
+		t.Fatalf("answer=%q", response.Answer)
+	}
+}
+
+func TestFormatToolExecutionCompactsNewsURLs(t *testing.T) {
+	result := `{"articles":[{"title":"Первая новость","source":"Источник 1","url":"https://example.test/` + strings.Repeat("x", 1000) + `"},{"title":"Вторая новость","source":"Источник 2"}]}`
+	text := formatToolExecutionForChat(models.ToolExecution{Name: "search_news", Arguments: map[string]any{"city": "Испания"}, Result: result})
+	if strings.Contains(text, "https://") || !strings.Contains(text, "Получено новостей: 2") || !strings.Contains(text, "Первая новость") {
+		t.Fatalf("formatted tool result=%q", text)
+	}
+}
+
+func TestAgentShowsDeferredCityBriefingWithoutGitHubError(t *testing.T) {
+	client := &scriptedToolClient{completions: []models.ModelCompletion{
+		{ToolCalls: []models.ToolCall{{ID: "weather", Type: "function", Function: models.ToolCallFunction{Name: "get_city_weather", Arguments: `{"city":"Вологда"}`}}}},
+		{ToolCalls: []models.ToolCall{{ID: "news", Type: "function", Function: models.ToolCallFunction{Name: "search_news", Arguments: `{"city":"Россия","query":"","from":"2026-09-27","to":"2026-09-27"}`}}}},
+		{Answer: "# Брифинг\n\n## Погода\n\nВологда: ясно, 9 °C.\n\nПодтвердите сохранение в GitHub."},
+	}}
+	runtime := &orchestrationRuntime{}
+	a := New(client)
+	a.SetToolRuntime(runtime)
+
+	response, err := a.Respond(context.Background(), "deferred-briefing", "Мне нужен брифинг: погода в Вологде и события за сегодня в России. Выведи сюда, я ознакомлюсь и подтвержу сохранение в GitHub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runtime.calls, []string{"get_city_weather", "search_news"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls=%#v, want=%#v", got, want)
+	}
+	if !strings.Contains(response.Answer, "Подтвердите сохранение") || strings.Contains(response.Answer, "не выполнена") {
+		t.Fatalf("answer=%q", response.Answer)
+	}
+	if len(client.settings) != 3 || client.settings[0].MaxTokens != briefingMaxTokens {
+		t.Fatalf("briefing settings=%#v", client.settings)
+	}
+	if len(client.requests) == 0 || !strings.Contains(client.requests[0][1].Content, "Сегодня в часовом поясе Москвы:") {
+		t.Fatalf("tool context must include the current date: %#v", client.requests)
+	}
+	client.completions = append(client.completions, models.ModelCompletion{ToolCalls: []models.ToolCall{{ID: "save", Type: "function", Function: models.ToolCallFunction{Name: "github_put_file", Arguments: `{"path":"reports/vologda-briefing-2026-09-27.md","content":"# Брифинг\n\n## Погода\n\nВологда: ясно, 9 °C.","message":"docs: add city briefing 2026-09-27"}`}}}})
+	confirmed, err := a.Respond(context.Background(), "deferred-briefing", "Подтверждаю сохранение в GitHub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runtime.calls, []string{"get_city_weather", "search_news", "github_put_file"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls after confirmation=%#v, want=%#v", got, want)
+	}
+	if len(client.requests) != 3 {
+		t.Fatalf("confirmation must save server-side without a fourth model call; requests=%d", len(client.requests))
+	}
+	if content, _ := runtime.args[2]["content"].(string); !strings.Contains(content, "# Брифинг") {
+		t.Fatalf("saved report content=%q", content)
+	}
+	if !strings.Contains(confirmed.Answer, "89abcdef0123456789abcdef0123456789abcdef") {
+		t.Fatalf("confirmed answer=%q", confirmed.Answer)
 	}
 }
 

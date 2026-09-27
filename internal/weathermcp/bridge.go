@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -76,6 +78,9 @@ type Status struct {
 type summaryInput struct {
 	PeriodHours int `json:"period_hours,omitempty" jsonschema:"period in hours, 1-720; default 24"`
 }
+type cityInput struct {
+	City string `json:"city" jsonschema:"city name, for example Вологда"`
+}
 type clearHistoryInput struct{}
 type scheduleInput struct {
 	IntervalSeconds int `json:"interval_seconds" jsonschema:"collection interval in seconds, from 60 to 86400"`
@@ -108,6 +113,17 @@ func New(ctx context.Context, cfg Config) (*Bridge, error) {
 	mcp.AddTool(server, &mcp.Tool{Name: "collect_weather", Title: "Собрать погоду Москвы", Description: "Получает текущую погоду Москвы и сохраняет снимок в JSON-хранилище.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &falseValue, OpenWorldHint: &openWorld}}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, Observation, error) {
 		out, err := b.collect(ctx)
 		return nil, out, err
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "get_city_weather", Title: "Получить текущую погоду города", Description: "Получает текущую погоду указанного города. Используй для города, отличного от Москвы; результат не меняет историю и расписание Москвы.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &falseValue, OpenWorldHint: &openWorld}}, func(ctx context.Context, _ *mcp.CallToolRequest, in cityInput) (*mcp.CallToolResult, any, error) {
+		city := strings.TrimSpace(in.City)
+		if city == "" || len([]rune(city)) > 80 {
+			return nil, nil, errors.New("city должен содержать от 1 до 80 символов")
+		}
+		out, err := b.currentForCity(ctx, city)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, map[string]any{"location": city, "observation": out}, nil
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "weather_latest", Title: "Последняя погода Москвы", Description: "Возвращает последнее сохранённое измерение погоды Москвы.", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &falseValue, OpenWorldHint: &falseValue}}, func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		b.mu.Lock()
@@ -273,7 +289,31 @@ func (b *Bridge) runOnce(ctx context.Context) {
 }
 
 func (b *Bridge) collect(ctx context.Context) (Observation, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.Endpoint, nil)
+	out, err := b.fetch(ctx, b.cfg.Endpoint)
+	if err != nil {
+		return Observation{}, err
+	}
+	b.mu.Lock()
+	b.data.Observations = append(b.data.Observations, out)
+	if len(b.data.Observations) > 720 {
+		b.data.Observations = b.data.Observations[len(b.data.Observations)-720:]
+	}
+	b.data.Scheduler.MeasurementCount = len(b.data.Observations)
+	err = b.saveLocked()
+	b.mu.Unlock()
+	return out, err
+}
+
+func (b *Bridge) currentForCity(ctx context.Context, city string) (Observation, error) {
+	endpoint := b.cfg.Endpoint
+	if endpoint == sourceURL {
+		endpoint = "https://wttr.in/" + url.PathEscape(city) + "?format=j1"
+	}
+	return b.fetch(ctx, endpoint)
+}
+
+func (b *Bridge) fetch(ctx context.Context, endpoint string) (Observation, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -318,15 +358,7 @@ func (b *Bridge) collect(ctx context.Context) (Observation, error) {
 	if len(c.Description) > 0 {
 		out.Condition = c.Description[0].Value
 	}
-	b.mu.Lock()
-	b.data.Observations = append(b.data.Observations, out)
-	if len(b.data.Observations) > 720 {
-		b.data.Observations = b.data.Observations[len(b.data.Observations)-720:]
-	}
-	b.data.Scheduler.MeasurementCount = len(b.data.Observations)
-	err = b.saveLocked()
-	b.mu.Unlock()
-	return out, err
+	return out, nil
 }
 func (b *Bridge) summary(hours int) (any, error) {
 	if hours == 0 {

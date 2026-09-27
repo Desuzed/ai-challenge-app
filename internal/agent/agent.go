@@ -24,6 +24,7 @@ const maxTaskFieldCharacters = 4000
 const maxTaskPhases = 8
 const plannerPauseWindow = 1200 * time.Millisecond
 const plannerMaxTokens = 3200
+const briefingMaxTokens = 1600
 
 const projectPlannerPrompt = `Ты агент-проектировщик. Не реализуй продукт, не пиши код и не выполняй задачу вместо пользователя. Формируй и обновляй подробное текстовое ТЗ проекта: цель, активный этап, текущий шаг, ожидаемое действие, решения, открытые вопросы и дальнейшие шаги.
 
@@ -35,7 +36,15 @@ const projectPlannerPrompt = `Ты агент-проектировщик. Не �
 artifactTitle и artifactContent заполняй автоматически, когда агент перешёл на последний этап и все пункты плана закрыты: нет openQuestions, а текущий шаг завершён. artifactContent — отдельный, самодостаточный Markdown-документ, а не ответ в чате: включи цель, границы, роли и сценарии, функциональные и нефункциональные требования, данные и интеграции, принятые решения, риски, критерии приёмки. Не включай код и не реализуй приложение. До финального этапа не возвращай эти поля, чтобы не перезаписать ранее сформированный артефакт.`
 const toolSystemPrompt = `У тебя есть MCP-инструменты Яндекс Диска, GitHub, погоды Москвы и поиска новостей. Выполняй вызовы без запроса подтверждения: успешный результат инструмента — единственное основание сообщать об операции. Для текущей погоды Москвы сначала вызови collect_weather, затем weather_latest. Для статистики за период вызови weather_summary. Для «всей собранной информации», списка или всех измерений вызови weather_history. Для видео сначала используй list_desktop_videos, затем при необходимости analyze_desktop_video, estimate_video_upload и upload_video_to_yandex. Для GitHub используй github_get_repository, github_list_files, github_get_file и github_list_issues для чтения; github_put_file создаёт или обновляет файл коммитом, github_delete_file удаляет его коммитом.
 
-Для запроса сводки новостей строго выполни цепочку: (1) вызови search_news с городом, темой и периодом; (2) по ТОЛЬКО его сырым результатам подготовь Markdown в формате: заголовок с периодом, «Ключевые события» с 3–7 пунктами, «Что это означает», «Источники» со ссылками; не добавляй неподтверждённых фактов; (3) вызови github_put_file и сохрани полный Markdown в news-digests/news-YYYY-MM-DD_YYYY-MM-DD.md с сообщением коммита docs: add news digest YYYY-MM-DD—YYYY-MM-DD. Не спрашивай пользователя между шагами. После успешного github_put_file кратко сообщи ссылку на созданный отчёт.`
+Для запроса сводки новостей строго выполни цепочку: (1) вызови search_news с городом, темой и периодом; (2) по ТОЛЬКО его сырым результатам подготовь Markdown в формате: заголовок с периодом, «Ключевые события» с 3–7 пунктами, «Что это означает», «Источники» со ссылками; не добавляй неподтверждённых фактов; (3) вызови github_put_file и сохрани полный Markdown только в reports/news-YYYY-MM-DD_YYYY-MM-DD.md с сообщением коммита docs: add news digest YYYY-MM-DD—YYYY-MM-DD. Не спрашивай пользователя между шагами. После успешного github_put_file кратко сообщи ссылку на созданный отчёт.
+
+Выполняй только то, что прямо запросил пользователь. Если запрошена только погода — вызови только подходящий погодный инструмент и дай погоду; не ищи новости и не упоминай GitHub. Если запрошены только новости — вызови только search_news и дай новости; не запрашивай погоду и не упоминай GitHub. Если запрошены погода и новости — используй оба сервера, причём группы действий выполняй в том порядке, в котором пользователь их назвал. Для Москвы внутри погодной группы всегда сначала collect_weather, затем weather_latest; для любого другого города вызови get_city_weather. Для новостей вызови search_news за запрошенный период, темой и географией; если период не назван, используй текущий день, если тема не названа — пустую тему. География погоды и новостей может различаться.
+
+GitHub — это отдельное, строго opt-in действие. Никогда не предлагай сохранение, не проси подтверждение и не вызывай github_put_file, если пользователь сам не попросил сохранить, оформить в GitHub, закоммитить или положить файл в репозиторий. Если такое сохранение запрошено вместе с брифингом, подготовь единый Markdown-отчёт только из результатов MCP: заголовок, «Погода», «Ключевые события» (не более 5 пунктов), «Что это означает», «Источники» (не более 3 ссылок). Не вставляй длинные сырые JSON и URL вне раздела «Источники».
+
+Если пользователь просит сначала показать отчёт, ознакомиться, утвердить или подтвердить его, НЕ вызывай GitHub MCP в этом сообщении: покажи Markdown в чате и кратко сообщи, что ждёшь обычного согласия. После «да», «ок», «окей», «подтверждаю», «сохраняй» или другого очевидного согласия возьми подготовленный отчёт из диалога и вызови github_put_file. Не требуй точной фразы: распознавай согласие и просьбу о сохранении по смыслу, в том числе на других языках.
+
+Если пользователь просит сохранить, опубликовать, закоммитить или положить в GitHub уже показанный ранее отчёт — независимо от естественной формулировки и языка — вызови save_current_report_to_github с пустым JSON-объектом {}. Этот инструмент сам берёт последний Markdown-отчёт из диалога, поэтому никогда не передавай его текст в аргументах. Если пользователь сразу просит сохранить или закоммитить отчёт, вызови github_put_file после сбора нужных данных. Не вызывай github_put_file до получения результатов погоды и новостей. После успешного GitHub-вызова сообщи ссылку на отчёт.`
 const defaultRecentMessages = 10
 const minRecentMessages = 2
 const maxRecentMessages = 40
@@ -90,6 +99,7 @@ type conversation struct {
 	userID                          string
 	activeProfileID                 string
 	weatherClearConfirmationPending bool
+	pendingGitHubReport             *pendingGitHubReport
 	task                            models.TaskState
 	usages                          []models.ModelUsage
 	branches                        map[string]*dialogueBranch
@@ -122,6 +132,12 @@ type newsDigestSchedule struct {
 	Topic    string
 	Deadline time.Time
 	Interval time.Duration
+}
+
+type pendingGitHubReport struct {
+	Path    string
+	Content string
+	Message string
 }
 
 func New(client completer) *Agent { return newAgent(client, nil, PersistentState{}) }
@@ -273,6 +289,25 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		go a.runNewsDigest(jobCtx, sessionID, userID, schedule)
 		return a.responseLocked(c, u, started, nil, a.tokenReportLocked(c, nil, message, models.ModelUsage{})), nil
 	}
+	if c.pendingGitHubReport != nil && reportSaveConfirmed(message) {
+		return a.savePendingGitHubReportLocked(ctx, c, u, message)
+	}
+	if c.pendingGitHubReport == nil && saveExistingReportIntent(message) {
+		if content := latestReportContent(c.activeMessagesLocked()); content != "" {
+			date := time.Now().In(moscowLocation()).Format("2006-01-02")
+			c.pendingGitHubReport = &pendingGitHubReport{
+				Path:    "reports/briefing-" + date + ".md",
+				Content: content,
+				Message: "docs: add city briefing " + date,
+			}
+			return a.savePendingGitHubReportLocked(ctx, c, u, message)
+		}
+	}
+	if c.pendingGitHubReport != nil && toolIntent(message) {
+		// A new data request starts a new flow. Do not let a later short
+		// acknowledgement accidentally save the previous draft.
+		c.pendingGitHubReport = nil
+	}
 	previous := copyMessages(c.activeMessagesLocked())
 	toolTurn := a.tools != nil && (toolIntent(message) || toolFollowupIntent(message, previous) || awaitingToolConfirmation(previous))
 	plannerTurn := plannerEnabled(c) && !toolTurn
@@ -326,6 +361,14 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 	if plannerTurn {
 		answer, c.task = applyPlannerCompletion(c.task, completion.Answer, message)
 	}
+	if shouldStageGitHubReport(message, completion.ToolExecutions, answer) {
+		date := time.Now().In(moscowLocation()).Format("2006-01-02")
+		c.pendingGitHubReport = &pendingGitHubReport{
+			Path:    "reports/briefing-" + date + ".md",
+			Content: briefingContentForGitHub(answer),
+			Message: "docs: add city briefing " + date,
+		}
+	}
 	for _, execution := range completion.ToolExecutions {
 		c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "assistant", Content: formatToolExecutionForChat(execution)}))
 	}
@@ -342,6 +385,96 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 	report = a.tokenReportLocked(c, request, message, completion.Usage)
 	response := a.responseLocked(c, u, answer, request, report)
 	response.ToolExecutions = append([]models.ToolExecution(nil), completion.ToolExecutions...)
+	return response, nil
+}
+
+func shouldStageGitHubReport(message string, executions []models.ToolExecution, answer string) bool {
+	if !briefingIntent(message) || !githubSaveIntent(message) || !strings.Contains(strings.ToLower(message), "подтверж") || strings.TrimSpace(answer) == "" {
+		return false
+	}
+	for _, execution := range executions {
+		if execution.Name == "github_put_file" && !execution.IsError {
+			return false
+		}
+	}
+	return true
+}
+
+func briefingContentForGitHub(answer string) string {
+	if before, _, found := strings.Cut(answer, "\n---"); found {
+		return strings.TrimSpace(before)
+	}
+	return strings.TrimSpace(answer)
+}
+
+func reportSaveConfirmed(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	if strings.Contains(message, "подтверж") || strings.Contains(message, "сохраняй") || strings.Contains(message, "сохрани") {
+		return true
+	}
+	return message == "да" || message == "ок" || message == "окей" || message == "okay" || message == "ok" || message == "хорошо" || message == "согласен" || message == "согласна"
+}
+
+func githubSaveIntent(message string) bool {
+	message = strings.ToLower(message)
+	github := strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "репозитор")
+	write := strings.Contains(message, "сохран") || strings.Contains(message, "оформ") || strings.Contains(message, "закоммит") || strings.Contains(message, "коммит") || strings.Contains(message, "полож")
+	return github && write
+}
+
+func saveExistingReportIntent(message string) bool {
+	if !githubSaveIntent(message) {
+		return false
+	}
+	message = strings.ToLower(message)
+	return strings.Contains(message, "эту") || strings.Contains(message, "этот") || strings.Contains(message, "сводк") || strings.Contains(message, "отчёт") || strings.Contains(message, "отчет")
+}
+
+func latestReportContent(messages []models.ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if message.Role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if strings.HasPrefix(content, "# ") {
+			return briefingContentForGitHub(content)
+		}
+	}
+	return ""
+}
+
+func (a *Agent) savePendingGitHubReportLocked(ctx context.Context, c *conversation, u *userState, message string) (models.AgentResponse, error) {
+	pending := c.pendingGitHubReport
+	if a.tools == nil || pending == nil {
+		return models.AgentResponse{}, errors.New("черновик отчёта для GitHub не найден")
+	}
+	content, isError, err := a.tools.CallForModel(ctx, "github_put_file", map[string]any{
+		"path": pending.Path, "content": pending.Content, "message": pending.Message,
+	})
+	if err != nil {
+		content = err.Error()
+		isError = true
+	}
+	if isError {
+		encoded, _ := json.Marshal(map[string]any{"isError": true, "error": content})
+		content = string(encoded)
+	}
+	execution := models.ToolExecution{Name: "github_put_file", Arguments: map[string]any{"path": pending.Path, "message": pending.Message}, Result: content, IsError: isError}
+	answer := groundedGitHubWriteAnswer("", []models.ToolExecution{execution}, true)
+	previous := copyMessages(c.activeMessagesLocked())
+	c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "user", Content: message}, models.ChatMessage{Role: "assistant", Content: formatToolExecutionForChat(execution)}, models.ChatMessage{Role: "assistant", Content: answer}))
+	if !isError && strings.HasPrefix(answer, "Готово:") {
+		c.pendingGitHubReport = nil
+	}
+	c.trimWindowLocked()
+	if err := a.save(); err != nil {
+		c.setActiveMessagesLocked(previous)
+		return models.AgentResponse{}, ErrHistorySave
+	}
+	report := a.tokenReportLocked(c, nil, message, models.ModelUsage{})
+	response := a.responseLocked(c, u, answer, nil, report)
+	response.ToolExecutions = []models.ToolExecution{execution}
 	return response, nil
 }
 
@@ -494,7 +627,7 @@ func (a *Agent) finishNewsDigest(sessionID, userID string, schedule newsDigestSc
 		a.appendNewsEvent(sessionID, userID, "Сбор завершён: GitHub-инструмент недоступен.")
 		return
 	}
-	path := fmt.Sprintf("news-digests/%s-%s.md", strings.ToLower(strings.ReplaceAll(schedule.City, " ", "-")), schedule.Deadline.In(moscowLocation()).Format("2006-01-02"))
+	path := fmt.Sprintf("reports/%s-%s.md", strings.ToLower(strings.ReplaceAll(schedule.City, " ", "-")), schedule.Deadline.In(moscowLocation()).Format("2006-01-02"))
 	prompt := "На основе ТОЛЬКО сырых JSON-данных ниже напиши готовую Markdown-сводку со структурой: заголовок, период, ключевые события, что это означает, источники со ссылками. Не добавляй фактов вне источников и не описывай действия инструментов. Сырые данные:\n" + strings.Join(batches, "\n")
 	finishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -626,14 +759,22 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 	if !ok || a.tools == nil {
 		return models.ModelCompletion{}, errors.New("Выбранный клиент не поддерживает MCP tool calling.")
 	}
+	if briefingIntent(latestUserMessage) && settings.MaxTokens < briefingMaxTokens {
+		settings.MaxTokens = briefingMaxTokens
+	}
 	tools, err := a.tools.ToolsForModel(ctx)
 	if err != nil {
 		return models.ModelCompletion{}, err
 	}
+	tools = append(tools, models.ToolDefinition{Type: "function", Function: models.ToolFunction{
+		Name:        "save_current_report_to_github",
+		Description: "Сохраняет последний показанный пользователю Markdown-отчёт в GitHub. Не принимает текст отчёта в аргументах.",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}})
 	availableVideos := map[string]bool{}
 	executions := []models.ToolExecution{}
 	messages := append([]models.ChatMessage(nil), request...)
-	toolContext := toolSystemPrompt
+	toolContext := toolSystemPrompt + "\n\nСегодня в часовом поясе Москвы: " + time.Now().In(moscowLocation()).Format("2006-01-02") + ". Используй эту дату, когда пользователь говорит «сегодня» и не указал другой период."
 	if videoIntent(latestUserMessage) {
 		listResult, listIsError, listErr := a.tools.CallForModel(ctx, "list_desktop_videos", map[string]any{})
 		if listErr != nil {
@@ -663,11 +804,37 @@ func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, reque
 		if len(completion.ToolCalls) == 0 {
 			completion.Usage = total
 			completion.ToolExecutions = executions
-			completion.Answer = groundedGitHubWriteAnswer(groundedUploadAnswer(completion.Answer, executions, true), executions, true)
+			completion.Answer = groundedGitHubWriteAnswer(groundedUploadAnswer(completion.Answer, executions, videoUploadRequestedNow(latestUserMessage)), executions, githubWriteRequestedNow(latestUserMessage))
 			return completion, nil
 		}
 		messages = append(messages, models.ChatMessage{Role: "assistant", Content: completion.Answer, ToolCalls: completion.ToolCalls})
 		for _, call := range completion.ToolCalls {
+			if call.Function.Name == "save_current_report_to_github" {
+				content := latestReportContent(messages)
+				if content == "" {
+					toolContent := `{"isError":true,"error":"В диалоге нет ранее показанного Markdown-отчёта для сохранения."}`
+					executions = append(executions, models.ToolExecution{Name: call.Function.Name, Result: toolContent, IsError: true})
+					messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: toolContent})
+					continue
+				}
+				date := time.Now().In(moscowLocation()).Format("2006-01-02")
+				arguments := map[string]any{"path": "reports/briefing-" + date + ".md", "content": content, "message": "docs: add city briefing " + date}
+				content, isError, toolErr := a.tools.CallForModel(ctx, "github_put_file", arguments)
+				if toolErr != nil {
+					content, isError = toolErr.Error(), true
+				}
+				if isError {
+					encoded, _ := json.Marshal(map[string]any{"isError": true, "error": content})
+					content = string(encoded)
+				}
+				execution := models.ToolExecution{Name: "github_put_file", Arguments: map[string]any{"path": arguments["path"], "message": arguments["message"]}, Result: content, IsError: isError}
+				executions = append(executions, execution)
+				if !isError {
+					return models.ModelCompletion{Answer: groundedGitHubWriteAnswer("", executions, true), FinishReason: "tool_success", Usage: total, ToolExecutions: executions}, nil
+				}
+				messages = append(messages, models.ChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
+				continue
+			}
 			arguments := make(map[string]any)
 			if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil {
 				content := `{"isError":true,"error":"Некорректный JSON аргументов инструмента."}`
@@ -801,6 +968,16 @@ func toolIntent(message string) bool {
 	return clearWeather || weatherIntent(message) || news || github || (action && (video || destination)) || (desktop && (video || discovery || analysis)) || (video && (analysis || quota)) || (destination && quota) || strongMetadata
 }
 
+// briefingIntent reserves enough output tokens for a readable Markdown report
+// after the model has received raw results from several MCP servers.
+func briefingIntent(message string) bool {
+	message = strings.ToLower(message)
+	report := strings.Contains(message, "брифинг") || strings.Contains(message, "отчёт") || strings.Contains(message, "отчет") || strings.Contains(message, "дайджест") || strings.Contains(message, "сводк")
+	weather := strings.Contains(message, "погод") || strings.Contains(message, "температур") || strings.Contains(message, "осадк") || strings.Contains(message, "ветер")
+	news := strings.Contains(message, "новост") || strings.Contains(message, "событи")
+	return (report && (weather || news)) || (weather && news)
+}
+
 func videoIntent(message string) bool {
 	message = strings.ToLower(message)
 	return strings.Contains(message, "видео") || strings.Contains(message, "ролик") || strings.Contains(message, ".mov") || strings.Contains(message, ".mp4") || strings.Contains(message, "рабочий стол") || strings.Contains(message, "desktop")
@@ -812,7 +989,55 @@ func formatToolExecutionForChat(execution models.ToolExecution) string {
 		state = "ошибка"
 	}
 	arguments, _ := json.Marshal(execution.Arguments)
-	return "Этап MCP — " + execution.Name + " (" + state + ")\nАргументы: " + string(arguments) + "\nРезультат: " + execution.Result
+	return "Этап MCP — " + execution.Name + " (" + state + ")\nАргументы: " + string(arguments) + "\nРезультат: " + compactToolResult(execution)
+}
+
+// compactToolResult keeps the visible chat readable. Complete raw MCP output
+// still reaches the model in tool messages and remains available in the
+// structured response; long article URLs do not need to be duplicated in chat.
+func compactToolResult(execution models.ToolExecution) string {
+	if execution.IsError {
+		return abbreviateToolText(execution.Result, 600)
+	}
+	switch execution.Name {
+	case "search_news":
+		var payload struct {
+			Articles []struct {
+				Title  string `json:"title"`
+				Source string `json:"source"`
+			} `json:"articles"`
+		}
+		if json.Unmarshal([]byte(execution.Result), &payload) == nil {
+			items := make([]string, 0, min(3, len(payload.Articles)))
+			for _, article := range payload.Articles[:min(3, len(payload.Articles))] {
+				item := strings.TrimSpace(article.Title)
+				if source := strings.TrimSpace(article.Source); source != "" {
+					item += " — " + source
+				}
+				items = append(items, item)
+			}
+			return fmt.Sprintf("Получено новостей: %d. Первые: %s", len(payload.Articles), strings.Join(items, "; "))
+		}
+	case "get_city_weather":
+		var payload struct {
+			Location    string `json:"location"`
+			Observation struct {
+				TemperatureC float64 `json:"temperatureC"`
+				Condition    string  `json:"condition"`
+			} `json:"observation"`
+		}
+		if json.Unmarshal([]byte(execution.Result), &payload) == nil && payload.Location != "" {
+			return fmt.Sprintf("%s: %s, %.0f °C.", payload.Location, strings.TrimSpace(payload.Observation.Condition), payload.Observation.TemperatureC)
+		}
+	}
+	return abbreviateToolText(execution.Result, 600)
+}
+
+func abbreviateToolText(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }
 
 func weatherIntent(message string) bool {
@@ -877,6 +1102,31 @@ func explicitGitHubConfirmation(message string) bool {
 	return strings.Contains(message, "подтверждаю") && (strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "коммит") || strings.Contains(message, "файл"))
 }
 
+// githubWriteRequestedNow distinguishes a direct save request from a staged
+// briefing request such as "first show it, then I will confirm". The latter
+// must be allowed to end after collecting data without being reported as a
+// failed GitHub operation.
+func githubWriteRequestedNow(message string) bool {
+	message = strings.ToLower(message)
+	deferred := strings.Contains(message, "сначала") || strings.Contains(message, "ознаком") || strings.Contains(message, "после подтверж") || strings.Contains(message, "после того как подтверж") || strings.Contains(message, "утверж")
+	if deferred {
+		return false
+	}
+	write := strings.Contains(message, "сохран") || strings.Contains(message, "закоммит") || strings.Contains(message, "коммит") || strings.Contains(message, "запиши") || strings.Contains(message, "оформи") || strings.Contains(message, "положи")
+	github := strings.Contains(message, "github") || strings.Contains(message, "гитхаб") || strings.Contains(message, "репозитор")
+	return write && github
+}
+
+func videoUploadRequestedNow(message string) bool {
+	message = strings.ToLower(message)
+	if strings.Contains(message, "сначала") || strings.Contains(message, "ознаком") || strings.Contains(message, "после подтверж") {
+		return false
+	}
+	upload := strings.Contains(message, "загруз") || strings.Contains(message, "закин") || strings.Contains(message, "отправ") || strings.Contains(message, "положи")
+	video := strings.Contains(message, "видео") || strings.Contains(message, "ролик") || strings.Contains(message, ".mov") || strings.Contains(message, ".mp4")
+	return upload && video
+}
+
 func groundedUploadAnswer(modelAnswer string, executions []models.ToolExecution, confirmationGiven bool) string {
 	var lastUpload *models.ToolExecution
 	for i := range executions {
@@ -933,14 +1183,28 @@ func groundedGitHubWriteAnswer(modelAnswer string, executions []models.ToolExecu
 		CommitSHA string `json:"commitSha"`
 		URL       string `json:"url"`
 	}
-	if json.Unmarshal([]byte(lastWrite.Result), &result) == nil && result.CommitSHA != "" {
+	if json.Unmarshal([]byte(lastWrite.Result), &result) == nil && validGitHubCommitSHA(result.CommitSHA) && validGitHubFileURL(result.URL) {
 		answer := fmt.Sprintf("Готово: GitHub подтвердил коммит `%s` для `%s` в ветке `%s`.", result.CommitSHA, result.Path, result.Branch)
-		if result.URL != "" {
-			answer += " Файл: " + result.URL
-		}
+		answer += " Файл: " + result.URL
 		return answer
 	}
-	return "Изменение в GitHub не подтверждено: MCP не вернул SHA коммита."
+	return "Изменение в GitHub не подтверждено: MCP не вернул проверяемые SHA коммита и ссылку на файл."
+}
+
+func validGitHubCommitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validGitHubFileURL(value string) bool {
+	return strings.HasPrefix(value, "https://github.com/")
 }
 
 func (a *Agent) configureLocked(c *conversation, recent int, strategy models.ContextStrategy, model string) error {

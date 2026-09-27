@@ -15,6 +15,12 @@ func TestBridgeListsReadsAndWritesTextFiles(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/demo":
 			_ = json.NewEncoder(w).Encode(map[string]any{"full_name": "acme/demo", "default_branch": "main", "html_url": "https://github.com/acme/demo"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/demo/contents/notes.txt":
+			if wrote == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"path": "notes.txt", "sha": "file-sha", "encoding": "base64", "content": wrote["content"]})
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/demo/contents/README.md":
 			_ = json.NewEncoder(w).Encode(map[string]string{"path": "README.md", "sha": "old-sha", "encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte("hello"))})
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/demo/contents/obsolete.txt":
@@ -25,7 +31,7 @@ func TestBridgeListsReadsAndWritesTextFiles(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&wrote); err != nil {
 				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"content": map[string]string{"html_url": "https://github.com/acme/demo/blob/main/notes.txt"}, "commit": map[string]string{"sha": "new-sha"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"content": map[string]string{"html_url": "https://github.com/acme/demo/blob/main/notes.txt"}, "commit": map[string]string{"sha": "0123456789abcdef0123456789abcdef01234567"}})
 		case r.Method == http.MethodDelete && r.URL.Path == "/repos/acme/demo/contents/obsolete.txt":
 			if err := json.NewDecoder(r.Body).Decode(&wrote); err != nil {
 				t.Fatal(err)
@@ -74,5 +80,26 @@ func TestBridgeListsReadsAndWritesTextFiles(t *testing.T) {
 	deleted, err := bridge.Call(context.Background(), "github_delete_file", map[string]any{"path": "obsolete.txt", "message": "docs: remove obsolete file"})
 	if err != nil || deleted.IsError || wrote["sha"] != "obsolete-sha" {
 		t.Fatalf("deleted=%#v write body=%#v err=%v", deleted, wrote, err)
+	}
+}
+
+func TestPutFileRejectsUnverifiableGitHubResponse(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+		case http.MethodPut:
+			_ = json.NewEncoder(w).Encode(map[string]any{"content": map[string]string{"html_url": "https://github.com/acme/demo/blob/main/report.md"}, "commit": map[string]string{"sha": "a1b2c3d"}})
+		}
+	}))
+	defer api.Close()
+	bridge, err := New(context.Background(), Config{Token: "test-token", Repository: "acme/demo", Endpoint: api.URL, HTTPClient: api.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close()
+	result, err := bridge.Call(context.Background(), "github_put_file", map[string]any{"path": "report.md", "content": "# Report", "message": "docs: add report"})
+	if err != nil || !result.IsError {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }

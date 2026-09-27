@@ -100,13 +100,17 @@ func (c *Catalog) CallForModel(ctx context.Context, name string, args map[string
 	if strings.HasPrefix(name, "github_") {
 		return c.github.CallForModel(ctx, name, args)
 	}
-	if strings.HasPrefix(name, "weather_") || name == "collect_weather" || name == "scheduler_status" || name == "set_weather_schedule" || name == "stop_weather_scheduler" || name == "clear_weather_history" {
+	if isWeatherTool(name) {
 		return c.weather.CallForModel(ctx, name, args)
 	}
 	if name == "search_news" {
 		return c.news.CallForModel(ctx, name, args)
 	}
 	return c.yandex.CallForModel(ctx, name, args)
+}
+
+func isWeatherTool(name string) bool {
+	return strings.HasPrefix(name, "weather_") || name == "collect_weather" || name == "get_city_weather" || name == "scheduler_status" || name == "set_weather_schedule" || name == "stop_weather_scheduler" || name == "clear_weather_history"
 }
 func (c *Catalog) ToolsHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
