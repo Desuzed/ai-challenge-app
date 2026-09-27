@@ -28,6 +28,10 @@ func TestWeatherToolsPersistAndAggregateObservations(t *testing.T) {
 	if !strings.Contains(result, `"temperatureC":12`) {
 		t.Fatalf("unexpected collect result: %s", result)
 	}
+	city, isError, err := bridge.CallForModel(context.Background(), "get_city_weather", map[string]any{"city": "Вологда"})
+	if err != nil || isError || !strings.Contains(city, `"location":"Вологда"`) || !strings.Contains(city, `"temperatureC":12`) {
+		t.Fatalf("city weather: result=%s isError=%v err=%v", city, isError, err)
+	}
 	schedule, isError, err := bridge.CallForModel(context.Background(), "set_weather_schedule", map[string]any{"interval_seconds": 120})
 	if err != nil || isError || !strings.Contains(schedule, `"intervalSeconds":120`) {
 		t.Fatalf("schedule: result=%s isError=%v err=%v", schedule, isError, err)
