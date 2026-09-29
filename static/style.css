@@ -158,6 +158,8 @@ dialog::backdrop { background: #18212f66; }
 
 form { display: grid; gap: 12px; }
 label { display: grid; gap: 6px; font-size: .94rem; font-weight: 650; }
+.rag-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.rag-toggle input { width: auto; padding: 0; }
 input, select, textarea, button { font: inherit; }
 input, select, textarea {
   width: 100%;
@@ -169,7 +171,9 @@ input, select, textarea {
 textarea { resize: vertical; }
 textarea:focus, input:focus, select:focus { outline: 3px solid #bdd1ff; border-color: #4169e1; }
 
-.agent-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.agent-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+.send-controls { display: grid; justify-items: start; gap: 8px; }
+.chat-rag-toggle { justify-content: flex-start; font-size: .85rem; font-weight: 500; }
 button {
   padding: 12px 18px;
   border: 0;
