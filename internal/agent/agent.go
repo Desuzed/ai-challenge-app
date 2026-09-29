@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"ai-challenge-app/internal/models"
+	"ai-challenge-app/internal/rag"
 )
 
 const maxMessageCharacters = 32000
@@ -124,6 +125,7 @@ type Agent struct {
 	sessions  map[string]*conversation
 	users     map[string]*userState
 	tools     toolRuntime
+	retriever *rag.Searcher
 	newsJobs  map[string]context.CancelFunc
 }
 
@@ -143,7 +145,8 @@ type pendingGitHubReport struct {
 func New(client completer) *Agent { return newAgent(client, nil, PersistentState{}) }
 
 // SetToolRuntime attaches an MCP-backed tool catalogue and executor.
-func (a *Agent) SetToolRuntime(runtime toolRuntime) { a.tools = runtime }
+func (a *Agent) SetToolRuntime(runtime toolRuntime)  { a.tools = runtime }
+func (a *Agent) SetRetriever(searcher *rag.Searcher) { a.retriever = searcher }
 func NewPersistent(client completer, store Store) (*Agent, error) {
 	state, err := store.Load()
 	if err != nil {
@@ -227,6 +230,10 @@ func (a *Agent) RespondWithOptions(ctx context.Context, sessionID, input string,
 // RespondWithUserOptions keeps the dialogue scoped to a browser session while
 // applying the profile catalogue and long-term facts of its stable user.
 func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string) (models.AgentResponse, error) {
+	return a.RespondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, false)
+}
+
+func (a *Agent) RespondWithUserOptionsRAG(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool) (models.AgentResponse, error) {
 	message := strings.TrimSpace(input)
 	if message == "" {
 		return models.AgentResponse{}, ErrEmptyMessage
@@ -310,6 +317,17 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 	}
 	previous := copyMessages(c.activeMessagesLocked())
 	toolTurn := a.tools != nil && (toolIntent(message) || toolFollowupIntent(message, previous) || awaitingToolConfirmation(previous))
+	var matches []rag.Match
+	if ragEnabled {
+		if a.retriever == nil {
+			return models.AgentResponse{}, errors.New("Поиск по документам не настроен.")
+		}
+		var err error
+		matches, err = a.retriever.Search(ctx, message, 4)
+		if err != nil {
+			return models.AgentResponse{}, err
+		}
+	}
 	plannerTurn := plannerEnabled(c) && !toolTurn
 	if plannerTurn {
 		// An explicit approval closes the current stage before the model sees the
@@ -323,6 +341,10 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 		updateFacts(c.facts, message)
 	}
 	request := a.requestMessagesForModeLocked(c, u, plannerTurn)
+	if ragEnabled {
+		contextMessage := models.ChatMessage{Role: "system", Content: rag.Context(matches)}
+		request = append(request[:1], append([]models.ChatMessage{contextMessage}, request[1:]...)...)
+	}
 	report := a.tokenReportLocked(c, request, message, models.ModelUsage{})
 	if report.EstimatedRequestTokens+report.ReservedOutputTokens > report.ContextLimitTokens {
 		c.setActiveMessagesLocked(previous)
@@ -384,6 +406,10 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 	}
 	report = a.tokenReportLocked(c, request, message, completion.Usage)
 	response := a.responseLocked(c, u, answer, request, report)
+	response.RAGEnabled = ragEnabled
+	for _, match := range matches {
+		response.RAGSources = append(response.RAGSources, models.RAGSource{Source: match.Chunk.Source, Section: match.Chunk.Section, ChunkID: match.Chunk.ChunkID, Score: match.Score})
+	}
 	response.ToolExecutions = append([]models.ToolExecution(nil), completion.ToolExecutions...)
 	return response, nil
 }

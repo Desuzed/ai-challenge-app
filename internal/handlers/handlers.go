@@ -19,6 +19,7 @@ import (
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/models"
 	"ai-challenge-app/internal/openrouter"
+	"ai-challenge-app/internal/rag"
 )
 
 const (
@@ -413,8 +414,12 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
 	defer cancel()
-	result, err := h.agent.RespondWithUserOptions(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model)
+	result, err := h.agent.RespondWithUserOptionsRAG(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model, input.RAGEnabled)
 	if err != nil {
+		if errors.Is(err, rag.ErrIndexMissing) || errors.Is(err, rag.ErrIndexStale) || errors.Is(err, rag.ErrEmbeddingUnavailable) {
+			writeAgentError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		if errors.Is(err, agent.ErrEmptyMessage) || errors.Is(err, agent.ErrMessageTooLong) || strings.Contains(err.Error(), "N должен") || strings.Contains(err.Error(), "стратег") || strings.Contains(err.Error(), "модель") {
 			writeAgentError(w, http.StatusBadRequest, err.Error())
 			return
