@@ -19,6 +19,8 @@ import (
 	"ai-challenge-app/internal/mcpbridge"
 	"ai-challenge-app/internal/newsmcp"
 	"ai-challenge-app/internal/openrouter"
+	"ai-challenge-app/internal/rag"
+	"ai-challenge-app/internal/ragindex"
 	"ai-challenge-app/internal/weathermcp"
 )
 
@@ -51,6 +53,11 @@ func main() {
 		log.Fatalf("load agent history: %v", err)
 	}
 	handler.SetAgent(persistentAgent)
+	ollamaURL := localSetting("OLLAMA_URL", os.Getenv, os.ReadFile)
+	if ollamaURL == "" {
+		ollamaURL = "http://127.0.0.1:11434"
+	}
+	persistentAgent.SetRetriever(&rag.Searcher{Root: ".", IndexDir: ".local/rag", Model: "embeddinggemma", Embedder: ragindex.Ollama{URL: ollamaURL, Model: "embeddinggemma"}})
 	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
