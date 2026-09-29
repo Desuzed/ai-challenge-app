@@ -127,6 +127,14 @@ type AgentRequest struct {
 	RecentMessages int             `json:"recentMessages"`
 	Strategy       ContextStrategy `json:"strategy,omitempty"`
 	Model          string          `json:"model,omitempty"`
+	RAGEnabled     bool            `json:"ragEnabled,omitempty"`
+}
+
+type RAGSource struct {
+	Source  string  `json:"source"`
+	Section string  `json:"section"`
+	ChunkID string  `json:"chunkId"`
+	Score   float64 `json:"score"`
 }
 
 // ContextCommand changes context mode or the active branch without asking the
@@ -195,6 +203,8 @@ type TaskState struct {
 
 type AgentResponse struct {
 	Answer           string                   `json:"answer"`
+	RAGEnabled       bool                     `json:"ragEnabled,omitempty"`
+	RAGSources       []RAGSource              `json:"ragSources,omitempty"`
 	Messages         []ChatMessage            `json:"messages"`
 	RequestMessages  []ChatMessage            `json:"requestMessages,omitempty"`
 	Tokens           AgentTokenReport         `json:"tokens"`
