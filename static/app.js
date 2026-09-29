@@ -1,4 +1,6 @@
 const agentForm = document.querySelector('#agent-form');
+const ragEnabled = document.querySelector('#rag-enabled');
+const ragEnabledChat = document.querySelector('#rag-enabled-chat');
 const agentMessage = document.querySelector('#agent-message');
 const agentSubmit = document.querySelector('#agent-submit');
 const agentHistory = document.querySelector('#agent-history');
@@ -49,6 +51,16 @@ const mcpTokenNote = document.querySelector('#mcp-token-note');
 const mcpResult = document.querySelector('#mcp-result');
 
 let selectedAgentModel = 'deepseek-flash';
+ragEnabled.checked = localStorage.getItem('ragEnabled') === 'true';
+ragEnabledChat.checked = ragEnabled.checked;
+function syncRAGToggle(event) {
+  const checked = event.target.checked;
+  ragEnabled.checked = checked;
+  ragEnabledChat.checked = checked;
+  localStorage.setItem('ragEnabled', String(checked));
+}
+ragEnabled.addEventListener('change', syncRAGToggle);
+ragEnabledChat.addEventListener('change', syncRAGToggle);
 let activeTask = {};
 let activeProfileID = '';
 const messageTimes = new Map();
@@ -604,7 +616,7 @@ agentForm.addEventListener('submit', async (event) => {
   if (!Number.isInteger(n) || n < 2 || n > 40) { setStatus('N должен быть целым числом от 2 до 40.', true); recentMessages.focus(); return; }
   agentSubmit.disabled = true;
   setStatus(activeTask.goal ? 'Агент проектирует… Можно нажать «Пауза», чтобы остановить работу.' : 'Агент отвечает…');
-  const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel };
+  const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked };
   requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON(requestBody)}\n\nОжидание ответа…`;
   try {
     const response = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(requestBody) });
@@ -614,6 +626,8 @@ agentForm.addEventListener('submit', async (event) => {
       taskState: payload.task,
       modelCallSkipped: payload.task?.status === 'paused',
       contextSentToModel: payload.requestMessages,
+      ragEnabled: payload.ragEnabled || false,
+      ragSources: payload.ragSources || [],
       mcpToolExecutions: payload.toolExecutions || [],
     })}`;
     if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ агента.');
