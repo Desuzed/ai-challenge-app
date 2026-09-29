@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,7 +13,69 @@ import (
 	"time"
 
 	"ai-challenge-app/internal/models"
+	"ai-challenge-app/internal/rag"
+	"ai-challenge-app/internal/ragindex"
 )
+
+type ragTestEmbedder struct{}
+
+func (ragTestEmbedder) Embed(context.Context, []string) ([][]float64, error) {
+	return [][]float64{{1, 0}}, nil
+}
+
+func TestRAGToggleAddsSourcesOnlyToEnabledRequest(t *testing.T) {
+	root := t.TempDir()
+	content := "# Storage\nThe private project uses a local JSON file for agent history.\n"
+	if err := os.WriteFile(filepath.Join(root, "guide.md"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docs, err := ragindex.Load(root, []string{"guide.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ragindex.ChunkDocuments(docs, "structure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks[0].Vector = []float64{1, 0}
+	data, err := json.Marshal(ragindex.Index{Strategy: "structure", Model: "test-model", Files: docs, Chunks: chunks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexDir := filepath.Join(root, "index")
+	if err := os.Mkdir(indexDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(indexDir, "index-structure.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeCompleter{answer: "Ответ"}
+	a := New(client)
+	a.SetRetriever(&rag.Searcher{Root: root, IndexDir: indexDir, Model: "test-model", Embedder: ragTestEmbedder{}})
+	for _, session := range []string{"plain", "with-rag"} {
+		if _, err := a.ApplyContextCommand(session, models.ContextCommand{Action: "set_planner_mode", PlannerMode: "disabled"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	question := "Где хранится история проекта?"
+	plain, err := a.RespondWithUserOptionsRAG(context.Background(), "plain", "plain", question, 10, models.StrategySlidingWindow, models.DeepSeekFlashModel, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withRAG, err := a.RespondWithUserOptionsRAG(context.Background(), "with-rag", "with-rag", question, 10, models.StrategySlidingWindow, models.DeepSeekFlashModel, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.RAGEnabled || len(plain.RAGSources) != 0 || len(withRAG.RAGSources) != 1 || !withRAG.RAGEnabled {
+		t.Fatalf("plain=%#v rag=%#v", plain.RAGSources, withRAG.RAGSources)
+	}
+	if strings.Contains(fmt.Sprint(plain.RequestMessages), "private project") || !strings.Contains(fmt.Sprint(withRAG.RequestMessages), "private project") {
+		t.Fatal("RAG context was not isolated to enabled request")
+	}
+	if strings.Contains(fmt.Sprint(withRAG.Messages), "private project") {
+		t.Fatal("retrieved text leaked into persistent dialogue history")
+	}
+}
 
 type fakeCompleter struct {
 	requests [][]models.ChatMessage
