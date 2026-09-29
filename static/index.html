@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
     <title>AI Challenge — чат</title>
-    <link rel="stylesheet" href="style.css?v=task-state-2">
+    <link rel="stylesheet" href="style.css?v=rag-toggle-1">
   </head>
   <body>
     <main class="container">
@@ -30,7 +30,12 @@
             <label for="agent-message">Сообщение</label>
             <textarea id="agent-message" name="message" rows="4" maxlength="32000" autofocus placeholder="Опишите проект или задайте вопрос агенту-проектировщику…"></textarea>
             <div class="agent-actions">
-              <button id="agent-submit" type="submit">Отправить</button>
+              <div class="send-controls">
+                <button id="agent-submit" type="submit">Отправить</button>
+                <label class="rag-toggle chat-rag-toggle" for="rag-enabled-chat">Поиск по документам (RAG)
+                  <input id="rag-enabled-chat" type="checkbox">
+                </label>
+              </div>
               <button id="clear-agent-history" class="secondary-button" type="button">Удалить всю историю</button>
             </div>
           </form>
@@ -85,6 +90,9 @@
                 <input id="recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
               </label>
               <p id="strategy-description" class="hint">В модель отправляются только последние N сообщений. Ранние реплики удаляются.</p>
+              <label class="rag-toggle" for="rag-enabled">Поиск по документам (RAG)
+                <input id="rag-enabled" type="checkbox">
+              </label>
               <details class="parameter-section" open>
                 <summary>Профили агента</summary>
                 <p class="hint">Роль или контекст для текущей сессии. Профили можно создавать, выбирать и менять.</p>
@@ -173,6 +181,6 @@
         </details>
       </section>
     </main>
-    <script src="app.js?v=mcp-weather-time-1"></script>
+    <script src="app.js?v=rag-toggle-1"></script>
   </body>
 </html>
