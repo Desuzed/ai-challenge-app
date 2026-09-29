@@ -1,4 +1,4 @@
-// Package ragindex builds local document indexes for the day 21 exercise.
+// Package ragindex builds local document indexes with embedding metadata.
 package ragindex
 
 import (
