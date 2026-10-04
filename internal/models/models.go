@@ -128,13 +128,34 @@ type AgentRequest struct {
 	Strategy       ContextStrategy `json:"strategy,omitempty"`
 	Model          string          `json:"model,omitempty"`
 	RAGEnabled     bool            `json:"ragEnabled,omitempty"`
+	RAGOptions     RAGOptions      `json:"ragOptions,omitempty"`
+}
+
+// RAGOptions exposes the two stages of document selection in the UI/API.
+// Zero values mean the server's safe teaching defaults.
+type RAGOptions struct {
+	CandidateLimit int     `json:"candidateLimit,omitempty"`
+	ResultLimit    int     `json:"resultLimit,omitempty"`
+	MinSimilarity  float64 `json:"minSimilarity,omitempty"`
+	Rewrite        *bool   `json:"rewrite,omitempty"`
+	Rerank         *bool   `json:"rerank,omitempty"`
 }
 
 type RAGSource struct {
-	Source  string  `json:"source"`
-	Section string  `json:"section"`
-	ChunkID string  `json:"chunkId"`
-	Score   float64 `json:"score"`
+	Source       string  `json:"source"`
+	Section      string  `json:"section"`
+	ChunkID      string  `json:"chunkId"`
+	Score        float64 `json:"score"`
+	LexicalScore float64 `json:"lexicalScore,omitempty"`
+	RerankScore  float64 `json:"rerankScore,omitempty"`
+}
+
+type RAGTrace struct {
+	OriginalQuery  string     `json:"originalQuery"`
+	RewrittenQuery string     `json:"rewrittenQuery"`
+	Options        RAGOptions `json:"options"`
+	CandidateCount int        `json:"candidateCount"`
+	FilteredCount  int        `json:"filteredCount"`
 }
 
 // ContextCommand changes context mode or the active branch without asking the
@@ -205,6 +226,7 @@ type AgentResponse struct {
 	Answer           string                   `json:"answer"`
 	RAGEnabled       bool                     `json:"ragEnabled,omitempty"`
 	RAGSources       []RAGSource              `json:"ragSources,omitempty"`
+	RAGTrace         *RAGTrace                `json:"ragTrace,omitempty"`
 	Messages         []ChatMessage            `json:"messages"`
 	RequestMessages  []ChatMessage            `json:"requestMessages,omitempty"`
 	Tokens           AgentTokenReport         `json:"tokens"`
