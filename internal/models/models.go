@@ -145,6 +145,7 @@ type RAGSource struct {
 	Source       string  `json:"source"`
 	Section      string  `json:"section"`
 	ChunkID      string  `json:"chunkId"`
+	Quote        string  `json:"quote"`
 	Score        float64 `json:"score"`
 	LexicalScore float64 `json:"lexicalScore,omitempty"`
 	RerankScore  float64 `json:"rerankScore,omitempty"`
@@ -223,29 +224,32 @@ type TaskState struct {
 }
 
 type AgentResponse struct {
-	Answer           string                   `json:"answer"`
-	RAGEnabled       bool                     `json:"ragEnabled,omitempty"`
-	RAGSources       []RAGSource              `json:"ragSources,omitempty"`
-	RAGTrace         *RAGTrace                `json:"ragTrace,omitempty"`
-	Messages         []ChatMessage            `json:"messages"`
-	RequestMessages  []ChatMessage            `json:"requestMessages,omitempty"`
-	Tokens           AgentTokenReport         `json:"tokens"`
-	Strategy         ContextStrategy          `json:"strategy"`
-	Facts            []Fact                   `json:"facts,omitempty"`
-	Memory           MemoryLayers             `json:"memory"`
-	Profile          UserProfile              `json:"profile"`
-	Profiles         []UserProfile            `json:"profiles,omitempty"`
-	ActiveProfileID  string                   `json:"activeProfileId,omitempty"`
-	ActiveBranchID   string                   `json:"activeBranchId,omitempty"`
-	Branches         []ConversationBranch     `json:"branches,omitempty"`
-	Checkpoints      []ConversationCheckpoint `json:"checkpoints,omitempty"`
-	RecentMessages   int                      `json:"recentMessages"`
-	Model            string                   `json:"model"`
-	Task             TaskState                `json:"task"`
-	PendingMessage   string                   `json:"pendingMessage,omitempty"`
-	GlobalInvariants []Invariant              `json:"globalInvariants,omitempty"`
-	PlannerMode      string                   `json:"plannerMode"`
-	ToolExecutions   []ToolExecution          `json:"toolExecutions,omitempty"`
+	Answer              string                   `json:"answer"`
+	RAGEnabled          bool                     `json:"ragEnabled,omitempty"`
+	RAGSources          []RAGSource              `json:"ragSources"`
+	RAGTrace            *RAGTrace                `json:"ragTrace,omitempty"`
+	RAGAbstained        bool                     `json:"ragAbstained,omitempty"`
+	RAGReason           string                   `json:"ragReason,omitempty"`
+	RAGModelCallSkipped bool                     `json:"ragModelCallSkipped,omitempty"`
+	Messages            []ChatMessage            `json:"messages"`
+	RequestMessages     []ChatMessage            `json:"requestMessages,omitempty"`
+	Tokens              AgentTokenReport         `json:"tokens"`
+	Strategy            ContextStrategy          `json:"strategy"`
+	Facts               []Fact                   `json:"facts,omitempty"`
+	Memory              MemoryLayers             `json:"memory"`
+	Profile             UserProfile              `json:"profile"`
+	Profiles            []UserProfile            `json:"profiles,omitempty"`
+	ActiveProfileID     string                   `json:"activeProfileId,omitempty"`
+	ActiveBranchID      string                   `json:"activeBranchId,omitempty"`
+	Branches            []ConversationBranch     `json:"branches,omitempty"`
+	Checkpoints         []ConversationCheckpoint `json:"checkpoints,omitempty"`
+	RecentMessages      int                      `json:"recentMessages"`
+	Model               string                   `json:"model"`
+	Task                TaskState                `json:"task"`
+	PendingMessage      string                   `json:"pendingMessage,omitempty"`
+	GlobalInvariants    []Invariant              `json:"globalInvariants,omitempty"`
+	PlannerMode         string                   `json:"plannerMode"`
+	ToolExecutions      []ToolExecution          `json:"toolExecutions,omitempty"`
 }
 
 // AgentModelsResponse is the safe, key-free catalogue used by the chat UI.

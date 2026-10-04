@@ -265,6 +265,11 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	if err := a.configureLocked(c, recent, strategy, model); err != nil {
 		return models.AgentResponse{}, err
 	}
+	// Grounded RAG is a separate response path: it always searches before any
+	// planner, pause, schedule, or tool shortcut can intercept the question.
+	if ragEnabled {
+		return a.respondGroundedRAGLocked(ctx, c, u, message, ragOptions)
+	}
 	previousTask := copyTaskState(c.task)
 	if task, ok := taskFromMessage(message); ok {
 		if err := c.configureTaskLocked(task); err != nil {
@@ -329,21 +334,6 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	}
 	previous := copyMessages(c.activeMessagesLocked())
 	toolTurn := a.tools != nil && (toolIntent(message) || toolFollowupIntent(message, previous) || awaitingToolConfirmation(previous))
-	var matches []rag.Match
-	var ragResult rag.SearchResult
-	var searchOptions rag.SearchOptions
-	if ragEnabled {
-		if a.retriever == nil {
-			return models.AgentResponse{}, errors.New("Поиск по документам не настроен.")
-		}
-		searchOptions = ragOptionsForRequest(ragOptions)
-		var err error
-		ragResult, err = a.retriever.SearchWithOptions(ctx, message, searchOptions)
-		if err != nil {
-			return models.AgentResponse{}, err
-		}
-		matches = ragResult.Matches
-	}
 	plannerTurn := plannerEnabled(c) && !toolTurn
 	if plannerTurn {
 		// An explicit approval closes the current stage before the model sees the
@@ -357,10 +347,6 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		updateFacts(c.facts, message)
 	}
 	request := a.requestMessagesForModeLocked(c, u, plannerTurn)
-	if ragEnabled {
-		contextMessage := models.ChatMessage{Role: "system", Content: rag.Context(matches)}
-		request = append(request[:1], append([]models.ChatMessage{contextMessage}, request[1:]...)...)
-	}
 	report := a.tokenReportLocked(c, request, message, models.ModelUsage{})
 	if report.EstimatedRequestTokens+report.ReservedOutputTokens > report.ContextLimitTokens {
 		c.setActiveMessagesLocked(previous)
@@ -422,15 +408,174 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	}
 	report = a.tokenReportLocked(c, request, message, completion.Usage)
 	response := a.responseLocked(c, u, answer, request, report)
-	response.RAGEnabled = ragEnabled
-	if ragEnabled {
-		response.RAGTrace = &models.RAGTrace{OriginalQuery: ragResult.OriginalQuery, RewrittenQuery: ragResult.RewrittenQuery, Options: responseRAGOptions(searchOptions), CandidateCount: len(ragResult.Candidates), FilteredCount: len(matches)}
-	}
-	for _, match := range matches {
-		response.RAGSources = append(response.RAGSources, models.RAGSource{Source: match.Chunk.Source, Section: match.Chunk.Section, ChunkID: match.Chunk.ChunkID, Score: match.Score, LexicalScore: match.LexicalScore, RerankScore: match.RerankScore})
-	}
 	response.ToolExecutions = append([]models.ToolExecution(nil), completion.ToolExecutions...)
 	return response, nil
+}
+
+// respondGroundedRAGLocked enforces retrieval, evidence validation, and the
+// no-context fallback before returning anything to the user.
+func (a *Agent) respondGroundedRAGLocked(ctx context.Context, c *conversation, u *userState, message string, input models.RAGOptions) (models.AgentResponse, error) {
+	if a.retriever == nil {
+		return models.AgentResponse{}, errors.New("Поиск по документам не настроен.")
+	}
+	options := ragOptionsForRequest(input)
+	result, err := a.retriever.SearchWithOptions(ctx, message, options)
+	if err != nil {
+		return models.AgentResponse{}, err
+	}
+	answer := ""
+	var request []models.ChatMessage
+	var usage models.ModelUsage
+	var claims []groundedClaim
+	modelCalled := false
+	if len(result.Matches) == 0 {
+		answer = "Не знаю: в найденных документах нет достаточно релевантного контекста. Уточните вопрос или укажите документ/раздел."
+	} else {
+		request = []models.ChatMessage{
+			{Role: "system", Content: "Отвечай только по контексту. Верни только JSON {\"claims\":[{\"text\":\"одно утверждение\",\"evidence\":[{\"chunkId\":\"точный chunk_id\",\"quote\":\"дословная цитата из этого чанка\"}]}]}. Для каждого утверждения дай цитату, которая дословно находится в указанном чанке. Не добавляй факты без точной цитаты. Если ответа нет, верни {\"claims\":[]}."},
+			{Role: "system", Content: rag.Context(result.Matches)}, {Role: "user", Content: message},
+		}
+		settings := a.settings
+		settings.MaxTokens = 2200
+		if estimateMessagesTokens(request)+settings.MaxTokens > contextLimitTokens {
+			return models.AgentResponse{}, ErrContextLimit
+		}
+		var completion models.ModelCompletion
+		if c.model == models.DeepSeekFlashModel {
+			completion, err = a.client.CompleteMessages(ctx, request, settings)
+		} else if client, ok := a.client.(modelCompleter); ok {
+			completion, err = client.CompleteMessagesModel(ctx, c.model, request, settings)
+		} else {
+			err = errors.New("Выбранная модель недоступна для этого клиента.")
+		}
+		if err != nil {
+			return models.AgentResponse{}, err
+		}
+		modelCalled = true
+		usage = completion.Usage
+		claims = validateGroundedClaims(completion.Answer, result.Matches)
+		if len(claims) == 0 {
+			answer = "Не знаю: в найденных фрагментах нет проверяемого ответа с точной цитатой. Уточните вопрос."
+		}
+	}
+	used := map[string]bool{}
+	for _, claim := range claims {
+		for _, ev := range claim.Evidence {
+			used[ev.ChunkID] = true
+		}
+	}
+	sources := []models.RAGSource{}
+	for _, match := range result.Matches {
+		if !used[match.Chunk.ChunkID] {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, claim := range claims {
+			for _, ev := range claim.Evidence {
+				if ev.ChunkID == match.Chunk.ChunkID && !seen[ev.Quote] {
+					sources = append(sources, models.RAGSource{Source: match.Chunk.Source, Section: match.Chunk.Section, ChunkID: match.Chunk.ChunkID, Quote: ev.Quote, Score: match.Score, LexicalScore: match.LexicalScore, RerankScore: match.RerankScore})
+					seen[ev.Quote] = true
+				}
+			}
+		}
+	}
+	if len(claims) > 0 && len(sources) == 0 {
+		claims = nil
+		answer = "Не знаю: не удалось проверить цитату. Уточните вопрос."
+	}
+	if len(sources) > 0 {
+		var claimsText, refsText []string
+		for i, claim := range claims {
+			claimsText = append(claimsText, fmt.Sprintf("%d. %s [%d]", i+1, claim.Text, i+1))
+			for _, ev := range claim.Evidence {
+				for _, source := range sources {
+					if source.ChunkID == ev.ChunkID && source.Quote == ev.Quote {
+						refsText = append(refsText, fmt.Sprintf("[%d] %s · %s · %s\nЦитата: «%s»", i+1, source.Source, source.Section, source.ChunkID, source.Quote))
+					}
+				}
+			}
+		}
+		answer = "Ответ\n" + strings.Join(claimsText, "\n") + "\n\nИсточники и цитаты\n" + strings.Join(refsText, "\n\n")
+	}
+	previous := copyMessages(c.activeMessagesLocked())
+	c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "user", Content: message}, models.ChatMessage{Role: "assistant", Content: answer}))
+	if modelCalled {
+		c.appendUsageLocked(usage)
+	}
+	c.trimWindowLocked()
+	if err := a.save(); err != nil {
+		c.setActiveMessagesLocked(previous)
+		if modelCalled {
+			c.removeLastUsageLocked()
+		}
+		return models.AgentResponse{}, ErrHistorySave
+	}
+	report := a.tokenReportLocked(c, request, message, usage)
+	if modelCalled {
+		report.ReservedOutputTokens = 2200
+		report.RemainingContextTokens = report.ContextLimitTokens - report.EstimatedRequestTokens - report.ReservedOutputTokens
+		if report.RemainingContextTokens < 0 {
+			report.RemainingContextTokens = 0
+		}
+	}
+	response := a.responseLocked(c, u, answer, request, report)
+	response.RAGEnabled = true
+	response.RAGSources = sources
+	response.RAGModelCallSkipped = !modelCalled
+	response.RAGAbstained = strings.HasPrefix(answer, "Не знаю:")
+	if response.RAGAbstained {
+		response.RAGReason = "insufficient_context_or_unverifiable_evidence"
+	}
+	response.RAGTrace = &models.RAGTrace{OriginalQuery: result.OriginalQuery, RewrittenQuery: result.RewrittenQuery, Options: responseRAGOptions(options), CandidateCount: len(result.Candidates), FilteredCount: len(result.Matches)}
+	return response, nil
+}
+
+type groundedEvidence struct {
+	ChunkID string `json:"chunkId"`
+	Quote   string `json:"quote"`
+}
+type groundedClaim struct {
+	Text     string             `json:"text"`
+	Evidence []groundedEvidence `json:"evidence"`
+}
+type groundedEnvelope struct {
+	Claims []groundedClaim `json:"claims"`
+}
+
+func validateGroundedClaims(raw string, matches []rag.Match) []groundedClaim {
+	var parsed groundedEnvelope
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &parsed) != nil {
+		return nil
+	}
+	chunks := map[string]rag.Match{}
+	for _, match := range matches {
+		chunks[match.Chunk.ChunkID] = match
+	}
+	var claims []groundedClaim
+	for _, claim := range parsed.Claims {
+		claim.Text = strings.TrimSpace(claim.Text)
+		if claim.Text == "" {
+			continue
+		}
+		valid := groundedClaim{Text: claim.Text}
+		seen := map[string]bool{}
+		allEvidenceValid := len(claim.Evidence) > 0
+		for _, ev := range claim.Evidence {
+			match, ok := chunks[ev.ChunkID]
+			quote := strings.TrimSpace(ev.Quote)
+			key := ev.ChunkID + "\x00" + quote
+			if ok && quote != "" && strings.Contains(match.Chunk.Text, quote) && !seen[key] {
+				valid.Evidence = append(valid.Evidence, groundedEvidence{ChunkID: ev.ChunkID, Quote: quote})
+				seen[key] = true
+			} else {
+				allEvidenceValid = false
+			}
+		}
+		if allEvidenceValid && len(valid.Evidence) > 0 {
+			claims = append(claims, valid)
+		}
+	}
+	return claims
 }
 
 func ragOptionsForRequest(input models.RAGOptions) rag.SearchOptions {
@@ -1392,7 +1537,7 @@ func (a *Agent) responseLocked(c *conversation, u *userState, answer string, req
 		shortTerm = shortTerm[len(shortTerm)-c.recentMessages:]
 	}
 	profile := u.profiles[c.activeProfileID]
-	return models.AgentResponse{Answer: answer, Messages: copyMessages(c.activeMessagesLocked()), RequestMessages: copyMessages(request), Tokens: report, Strategy: c.strategy, Facts: factsSlice(c.facts), Memory: models.MemoryLayers{ShortTerm: copyMessages(shortTerm), Working: memoryItems(models.MemoryWorking, "", c.workingMemory), LongTerm: longTermItems(u.longTermMemory)}, Profile: profile, Profiles: profilesSlice(u.profiles), ActiveProfileID: c.activeProfileID, ActiveBranchID: c.activeBranchID, Branches: branchesSlice(c), Checkpoints: checkpointsSlice(c), RecentMessages: c.recentMessages, Model: c.model, Task: copyTaskState(c.task), PendingMessage: c.pendingMessage, GlobalInvariants: copyInvariants(u.globalInvariants), PlannerMode: c.plannerMode}
+	return models.AgentResponse{Answer: answer, RAGSources: []models.RAGSource{}, Messages: copyMessages(c.activeMessagesLocked()), RequestMessages: copyMessages(request), Tokens: report, Strategy: c.strategy, Facts: factsSlice(c.facts), Memory: models.MemoryLayers{ShortTerm: copyMessages(shortTerm), Working: memoryItems(models.MemoryWorking, "", c.workingMemory), LongTerm: longTermItems(u.longTermMemory)}, Profile: profile, Profiles: profilesSlice(u.profiles), ActiveProfileID: c.activeProfileID, ActiveBranchID: c.activeBranchID, Branches: branchesSlice(c), Checkpoints: checkpointsSlice(c), RecentMessages: c.recentMessages, Model: c.model, Task: copyTaskState(c.task), PendingMessage: c.pendingMessage, GlobalInvariants: copyInvariants(u.globalInvariants), PlannerMode: c.plannerMode}
 }
 func (a *Agent) tokenReportLocked(c *conversation, request []models.ChatMessage, current string, usage models.ModelUsage) models.AgentTokenReport {
 	history := c.activeMessagesLocked()
