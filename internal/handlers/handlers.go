@@ -414,7 +414,7 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
 	defer cancel()
-	result, err := h.agent.RespondWithUserOptionsRAG(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model, input.RAGEnabled)
+	result, err := h.agent.RespondWithUserOptionsRAGConfigured(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model, input.RAGEnabled, input.RAGOptions)
 	if err != nil {
 		if errors.Is(err, rag.ErrIndexMissing) || errors.Is(err, rag.ErrIndexStale) || errors.Is(err, rag.ErrEmbeddingUnavailable) {
 			writeAgentError(w, http.StatusServiceUnavailable, err.Error())
