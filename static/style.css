@@ -137,7 +137,11 @@ dialog::backdrop { background: #18212f66; }
 .parameter-section { padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
 .parameter-section summary { color: #395577; font-weight: 700; }
 .parameter-section[open] summary { margin-bottom: 10px; }
+.rag-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
+.rag-settings label { min-width: 0; }
+.rag-settings input { width: 100%; }
 .profile-picker { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 12px 0; }
+@media (max-width: 620px) { .rag-settings { grid-template-columns: 1fr; } }
 .profile-picker label { display: grid; gap: 5px; min-width: min(100%, 270px); color: #314155; font-size: .88rem; }
 .profile-form { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; }
 .profile-form label { color: #314155; font-size: .88rem; }
@@ -210,6 +214,10 @@ button:disabled { cursor: wait; opacity: .7; }
   border-radius: 12px;
   background: #fffaf0;
 }
+.mcp-panel summary { list-style: none; cursor: pointer; }
+.mcp-panel summary::-webkit-details-marker { display: none; }
+.mcp-panel[open] summary { margin-bottom: 0; }
+.mcp-summary-meta { display: flex; align-items: center; gap: 10px; }
 .mcp-eyebrow { margin: 0 0 4px; color: #9a6700; }
 .mcp-status { padding: 6px 9px; border: 1px solid #e1b94d; border-radius: 999px; color: #765300; font-size: .78rem; font-weight: 750; white-space: nowrap; }
 .mcp-status.connected { border-color: #78bd8f; background: #eefaf1; color: #176b36; }
