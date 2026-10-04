@@ -49,7 +49,7 @@ func TestRAGToggleAddsSourcesOnlyToEnabledRequest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(indexDir, "index-structure.json"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	client := &fakeCompleter{answer: "Ответ"}
+	client := &fakeCompleter{answer: `{"claims":[{"text":"История хранится в локальном JSON-файле.","evidence":[{"chunkId":"` + chunks[0].ChunkID + `","quote":"The private project uses a local JSON file for agent history."}]}]}`}
 	a := New(client)
 	a.SetRetriever(&rag.Searcher{Root: root, IndexDir: indexDir, Model: "test-model", Embedder: ragTestEmbedder{}})
 	for _, session := range []string{"plain", "with-rag"} {
@@ -69,11 +69,111 @@ func TestRAGToggleAddsSourcesOnlyToEnabledRequest(t *testing.T) {
 	if plain.RAGEnabled || len(plain.RAGSources) != 0 || len(withRAG.RAGSources) != 1 || !withRAG.RAGEnabled {
 		t.Fatalf("plain=%#v rag=%#v", plain.RAGSources, withRAG.RAGSources)
 	}
+	if withRAG.RAGSources[0].Quote != "The private project uses a local JSON file for agent history." || !strings.Contains(withRAG.Answer, withRAG.RAGSources[0].Quote) {
+		t.Fatalf("answer/source did not carry the verified quote: %#v", withRAG)
+	}
 	if strings.Contains(fmt.Sprint(plain.RequestMessages), "private project") || !strings.Contains(fmt.Sprint(withRAG.RequestMessages), "private project") {
 		t.Fatal("RAG context was not isolated to enabled request")
 	}
-	if strings.Contains(fmt.Sprint(withRAG.Messages), "private project") {
-		t.Fatal("retrieved text leaked into persistent dialogue history")
+	if !strings.Contains(fmt.Sprint(withRAG.Messages), "The private project uses a local JSON file for agent history.") {
+		t.Fatal("the persistent RAG answer did not retain its verified quote")
+	}
+}
+
+func TestValidateGroundedClaimsRequiresExactEvidenceForEveryClaim(t *testing.T) {
+	matches := []rag.Match{{Chunk: ragindex.Chunk{ChunkID: "chunk-1", Text: "History is stored in a local JSON file."}}}
+	valid := `{"claims":[{"text":"History is stored locally.","evidence":[{"chunkId":"chunk-1","quote":"stored in a local JSON file"}]}]}`
+	claims := validateGroundedClaims(valid, matches)
+	if len(claims) != 1 || claims[0].Evidence[0].Quote != "stored in a local JSON file" {
+		t.Fatalf("valid evidence rejected: %#v", claims)
+	}
+	invalid := `{"claims":[{"text":"Made-up statement.","evidence":[{"chunkId":"chunk-1","quote":"not in the chunk"}]},{"text":"Unknown chunk.","evidence":[{"chunkId":"chunk-2","quote":"text"}]}]}`
+	if got := validateGroundedClaims(invalid, matches); len(got) != 0 {
+		t.Fatalf("unsupported evidence passed validation: %#v", got)
+	}
+	partial := `{"claims":[{"text":"Composite claim.","evidence":[{"chunkId":"chunk-1","quote":"local JSON file"},{"chunkId":"chunk-1","quote":"fabricated"}]}]}`
+	if got := validateGroundedClaims(partial, matches); len(got) != 0 {
+		t.Fatalf("partially supported compound claim passed validation: %#v", got)
+	}
+}
+
+func makeRAGFixture(t *testing.T, vector []float64, answer string, usage models.ModelUsage) (*Agent, *fakeCompleter) {
+	t.Helper()
+	root := t.TempDir()
+	content := "# Storage\nThe private project uses a local JSON file for agent history.\n"
+	if err := os.WriteFile(filepath.Join(root, "guide.md"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docs, err := ragindex.Load(root, []string{"guide.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ragindex.ChunkDocuments(docs, "structure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks[0].Vector = vector
+	data, err := json.Marshal(ragindex.Index{Strategy: "structure", Model: "test-model", Files: docs, Chunks: chunks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexDir := filepath.Join(root, "index")
+	if err = os.Mkdir(indexDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(indexDir, "index-structure.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeCompleter{answer: answer, usage: usage}
+	a := New(client)
+	a.SetRetriever(&rag.Searcher{Root: root, IndexDir: indexDir, Model: "test-model", Embedder: ragTestEmbedder{}})
+	return a, client
+}
+
+func TestRAGBelowThresholdAbstainsWithoutModelCallAndReturnsEmptyJSONSources(t *testing.T) {
+	a, client := makeRAGFixture(t, []float64{0, 1}, `{"claims":[]}`, models.ModelUsage{})
+	response, err := a.RespondWithUserOptionsRAGConfigured(context.Background(), "u", "s", "Вопрос о несуществующей теме", 10, models.StrategySlidingWindow, models.DeepSeekFlashModel, true, models.RAGOptions{MinSimilarity: 0.4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 0 || !response.RAGModelCallSkipped || !response.RAGAbstained || response.RAGReason == "" {
+		t.Fatalf("expected pre-model refusal; client calls=%d response=%#v", len(client.requests), response)
+	}
+	if !strings.HasPrefix(response.Answer, "Не знаю") || !strings.Contains(response.Answer, "Уточните") || response.RAGSources == nil || len(response.RAGSources) != 0 {
+		t.Fatalf("invalid refusal contract: %#v", response)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err = json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if sources, ok := decoded["ragSources"].([]any); !ok || len(sources) != 0 {
+		t.Fatalf("ragSources must be JSON []: %s", encoded)
+	}
+	if response.Messages[len(response.Messages)-1].Content != response.Answer || response.Tokens.RequestTokens != 0 || response.Tokens.ResponseTokens != 0 || len(response.RequestMessages) != 0 {
+		t.Fatalf("refusal history/token/request mismatch: %#v", response)
+	}
+}
+
+func TestRAGInvalidQuoteAbstainsAndPersistsTheSameAnswerWithUsage(t *testing.T) {
+	answer := `{"claims":[{"text":"Unsupported answer","evidence":[{"chunkId":"invalid-id","quote":"fabricated quote"}]}]}`
+	usage := models.ModelUsage{InputTokens: 321, OutputTokens: 54}
+	a, client := makeRAGFixture(t, []float64{1, 0}, answer, usage)
+	response, err := a.RespondWithUserOptionsRAG(context.Background(), "u", "s", "Где история?", 10, models.StrategySlidingWindow, models.DeepSeekFlashModel, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.requests) != 1 || !response.RAGAbstained || response.RAGModelCallSkipped || len(response.RAGSources) != 0 || response.RAGSources == nil || !strings.HasPrefix(response.Answer, "Не знаю") {
+		t.Fatalf("invalid evidence was not refused: %#v", response)
+	}
+	if got := response.Messages[len(response.Messages)-1].Content; got != response.Answer {
+		t.Fatalf("persisted answer %q differs from response %q", got, response.Answer)
+	}
+	if response.Tokens.RequestTokens != usage.InputTokens || response.Tokens.ResponseTokens != usage.OutputTokens || len(response.RequestMessages) == 0 {
+		t.Fatalf("completion accounting/request missing: %#v", response.Tokens)
 	}
 }
 

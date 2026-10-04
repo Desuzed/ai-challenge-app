@@ -109,3 +109,25 @@ func TestSearchWithOptionsRewritesFiltersAndReranks(t *testing.T) {
 		t.Fatal("reranker score is missing")
 	}
 }
+
+func TestQueryTermsKeepsYoInsideRussianWord(t *testing.T) {
+	terms := queryTerms("Где сохраняются два индекса и отчёт?")
+	if !containsString(terms, "отчёт") {
+		t.Fatalf("query terms lost ё: %#v", terms)
+	}
+	if containsString(terms, "отч") {
+		t.Fatalf("query terms truncated отчёт: %#v", terms)
+	}
+	if rewritten := RewriteQuery("Где сохраняются два индекса и отчёт?"); !strings.Contains(rewritten, "отчёт") {
+		t.Fatalf("rewrite lost full word: %q", rewritten)
+	}
+}
+
+func containsString(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
