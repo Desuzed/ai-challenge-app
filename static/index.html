@@ -58,7 +58,7 @@
               <button id="return-for-rework" class="secondary-button compact-button" type="button">Вернуться к доработке</button>
               <button id="pause-task" class="secondary-button compact-button" type="button">Пауза</button>
               <button id="resume-task" class="secondary-button compact-button" type="button">Продолжить</button>
-              <button id="toggle-planner" class="secondary-button compact-button" type="button">Отключить планировщик</button>
+              <button id="toggle-planner" class="secondary-button compact-button" type="button">Включить планировщик</button>
               <button id="reset-task" class="secondary-button compact-button" type="button">Сбросить задачу</button>
             </div>
           </details>
@@ -93,6 +93,17 @@
               <label class="rag-toggle" for="rag-enabled">Поиск по документам (RAG)
                 <input id="rag-enabled" type="checkbox">
               </label>
+              <details class="parameter-section" open>
+                <summary>Reranking и фильтрация</summary>
+                <p class="hint">Сначала берём широкий top-K по эмбеддингам, отсекаем результаты ниже порога, затем lexical heuristic меняет порядок оставшихся. Все числа видны в логе запроса.</p>
+                <div class="rag-settings">
+                  <label for="rag-candidates">Top-K до фильтрации<input id="rag-candidates" type="number" min="1" max="20" value="8"></label>
+                  <label for="rag-results">Top-K после фильтрации<input id="rag-results" type="number" min="1" max="20" value="3"></label>
+                  <label for="rag-threshold">Порог similarity<input id="rag-threshold" type="number" min="-1" max="1" step="0.05" value="0.35"></label>
+                </div>
+                <label><input id="rag-rewrite" type="checkbox" checked> Rewrite запроса (локальный heuristic)</label>
+                <label><input id="rag-rerank" type="checkbox" checked> Rerank оставшихся фрагментов</label>
+              </details>
               <details class="parameter-section" open>
                 <summary>Профили агента</summary>
                 <p class="hint">Роль или контекст для текущей сессии. Профили можно создавать, выбирать и менять.</p>
@@ -151,14 +162,17 @@
           </dialog>
         </section>
 
-        <section class="mcp-panel" aria-labelledby="mcp-title">
-          <div class="section-heading">
+        <details class="mcp-panel" aria-labelledby="mcp-title">
+          <summary class="section-heading">
             <div>
               <p class="eyebrow mcp-eyebrow">Интеграции агента</p>
               <h2 id="mcp-title">Подключённые MCP-инструменты</h2>
             </div>
-            <span id="mcp-status" class="mcp-status">Подключение…</span>
-          </div>
+            <div class="mcp-summary-meta">
+              <span id="mcp-status" class="mcp-status">Подключение…</span>
+              <span class="collapse-label">Показать / скрыть</span>
+            </div>
+          </summary>
           <p class="hint">Агент получает живой список инструментов при запуске. Погодный MCP Москвы сохраняет измерения в JSON, собирает их в фоне с заданным в чате периодом и возвращает сводку или полную историю. Яндекс Диск и GitHub остаются подключены.</p>
 
           <div class="mcp-grid">
@@ -173,7 +187,7 @@
               <pre id="mcp-result" class="mcp-result">Журнал MCP появится после tools/list.</pre>
             </div>
           </div>
-        </section>
+        </details>
 
         <details class="logs-card">
           <summary>Логи</summary>

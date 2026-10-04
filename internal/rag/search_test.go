@@ -64,3 +64,48 @@ func TestSearchRanksIndexedChunksAndDetectsChanges(t *testing.T) {
 		t.Fatalf("stale index error=%v", err)
 	}
 }
+
+func TestSearchWithOptionsRewritesFiltersAndReranks(t *testing.T) {
+	root := t.TempDir()
+	history := "История агента хранится в agent-history.json. "
+	weather := "Погода Москвы собирается каждую минуту. "
+	if err := os.WriteFile(filepath.Join(root, "guide.md"), []byte("# История\n"+strings.Repeat(history, 5)+"\n# Другое\n"+strings.Repeat(weather, 5)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docs, err := ragindex.Load(root, []string{"guide.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ragindex.ChunkDocuments(docs, "structure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("chunks=%d", len(chunks))
+	}
+	// Vector search slightly prefers the weather chunk. The lexical second stage
+	// must restore the history chunk because the rewritten query expands it.
+	chunks[0].Vector, chunks[1].Vector = []float64{0.95, 0.05}, []float64{1, 0}
+	data, _ := json.Marshal(ragindex.Index{Strategy: "structure", Model: "test-model", Files: docs, Chunks: chunks})
+	indexDir := filepath.Join(root, "index")
+	if err := os.Mkdir(indexDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(indexDir, "index-structure.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Searcher{Root: root, IndexDir: indexDir, Model: "test-model", Embedder: fakeEmbedder{[]float64{1, 0}}}
+	result, err := s.SearchWithOptions(context.Background(), "Где история диалога?", SearchOptions{CandidateLimit: 2, ResultLimit: 1, MinSimilarity: 0.5, Rewrite: true, Rerank: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.RewrittenQuery, "agent") {
+		t.Fatalf("rewrite=%q", result.RewrittenQuery)
+	}
+	if len(result.Candidates) != 2 || len(result.Matches) != 1 || result.Matches[0].Chunk.Section != "История" {
+		t.Fatalf("result=%#v", result)
+	}
+	if result.Matches[0].RerankScore <= 0 {
+		t.Fatal("reranker score is missing")
+	}
+}

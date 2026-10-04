@@ -1,6 +1,11 @@
 const agentForm = document.querySelector('#agent-form');
 const ragEnabled = document.querySelector('#rag-enabled');
 const ragEnabledChat = document.querySelector('#rag-enabled-chat');
+const ragCandidates = document.querySelector('#rag-candidates');
+const ragResults = document.querySelector('#rag-results');
+const ragThreshold = document.querySelector('#rag-threshold');
+const ragRewrite = document.querySelector('#rag-rewrite');
+const ragRerank = document.querySelector('#rag-rerank');
 const agentMessage = document.querySelector('#agent-message');
 const agentSubmit = document.querySelector('#agent-submit');
 const agentHistory = document.querySelector('#agent-history');
@@ -61,6 +66,13 @@ function syncRAGToggle(event) {
 }
 ragEnabled.addEventListener('change', syncRAGToggle);
 ragEnabledChat.addEventListener('change', syncRAGToggle);
+function selectedRAGOptions() {
+  const candidateLimit = Number(ragCandidates.value); const resultLimit = Number(ragResults.value); const minSimilarity = Number(ragThreshold.value);
+  if (!Number.isInteger(candidateLimit) || candidateLimit < 1 || candidateLimit > 20 || !Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > candidateLimit || !Number.isFinite(minSimilarity) || minSimilarity < -1 || minSimilarity > 1) {
+    throw new Error('RAG: top-K до фильтрации — 1…20, top-K после — не больше него, порог — от -1 до 1.');
+  }
+  return { candidateLimit, resultLimit, minSimilarity, rewrite: ragRewrite.checked, rerank: ragRerank.checked };
+}
 let activeTask = {};
 let activeProfileID = '';
 const messageTimes = new Map();
@@ -332,7 +344,7 @@ function renderContextState(payload) {
     agentModel.value = selectedAgentModel;
   }
   strategyDescription.textContent = strategyDescriptions[contextStrategy.value];
-  window.currentPlannerMode = payload.plannerMode || 'enabled';
+  window.currentPlannerMode = payload.plannerMode || 'disabled';
   renderTask(payload.task, payload.tokens);
   renderInvariants(payload);
   if (payload.memory) renderMemoryLayers(payload.memory);
@@ -614,9 +626,11 @@ agentForm.addEventListener('submit', async (event) => {
   const message = agentMessage.value.trim(); const n = Number(recentMessages.value);
   if (!message) { setStatus('Введите сообщение для агента.', true); agentMessage.focus(); return; }
   if (!Number.isInteger(n) || n < 2 || n > 40) { setStatus('N должен быть целым числом от 2 до 40.', true); recentMessages.focus(); return; }
+  let ragOptions;
+  try { ragOptions = selectedRAGOptions(); } catch (error) { setStatus(error.message, true); return; }
   agentSubmit.disabled = true;
   setStatus(activeTask.goal ? 'Агент проектирует… Можно нажать «Пауза», чтобы остановить работу.' : 'Агент отвечает…');
-  const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked };
+  const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked, ragOptions };
   requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON(requestBody)}\n\nОжидание ответа…`;
   try {
     const response = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(requestBody) });
@@ -627,6 +641,7 @@ agentForm.addEventListener('submit', async (event) => {
       modelCallSkipped: payload.task?.status === 'paused',
       contextSentToModel: payload.requestMessages,
       ragEnabled: payload.ragEnabled || false,
+      ragTrace: payload.ragTrace || null,
       ragSources: payload.ragSources || [],
       mcpToolExecutions: payload.toolExecutions || [],
     })}`;

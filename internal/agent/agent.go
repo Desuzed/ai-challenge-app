@@ -202,7 +202,9 @@ func newAgent(client completer, store Store, restored PersistentState) *Agent {
 	return a
 }
 func newConversation() *conversation {
-	return &conversation{strategy: models.StrategySlidingWindow, model: models.DeepSeekFlashModel, recentMessages: defaultRecentMessages, plannerMode: "enabled", facts: make(map[string]string), workingMemory: make(map[string]string), branches: make(map[string]*dialogueBranch), checkpoints: make(map[string]checkpoint)}
+	// Planning is opt-in: a new chat is an ordinary assistant conversation
+	// until the user explicitly enables the project-planner mode.
+	return &conversation{strategy: models.StrategySlidingWindow, model: models.DeepSeekFlashModel, recentMessages: defaultRecentMessages, plannerMode: "disabled", facts: make(map[string]string), workingMemory: make(map[string]string), branches: make(map[string]*dialogueBranch), checkpoints: make(map[string]checkpoint)}
 }
 
 // Respond keeps only a window in the first two strategies. Branches retain an
@@ -234,6 +236,16 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 }
 
 func (a *Agent) RespondWithUserOptionsRAG(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool) (models.AgentResponse, error) {
+	return a.respondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, ragEnabled, models.RAGOptions{})
+}
+
+// RespondWithUserOptionsRAGConfigured keeps the legacy API stable while the
+// HTTP/UI flow can choose the visible retrieval and filtering parameters.
+func (a *Agent) RespondWithUserOptionsRAGConfigured(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool, ragOptions models.RAGOptions) (models.AgentResponse, error) {
+	return a.respondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, ragEnabled, ragOptions)
+}
+
+func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool, ragOptions models.RAGOptions) (models.AgentResponse, error) {
 	message := strings.TrimSpace(input)
 	if message == "" {
 		return models.AgentResponse{}, ErrEmptyMessage
@@ -318,15 +330,19 @@ func (a *Agent) RespondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	previous := copyMessages(c.activeMessagesLocked())
 	toolTurn := a.tools != nil && (toolIntent(message) || toolFollowupIntent(message, previous) || awaitingToolConfirmation(previous))
 	var matches []rag.Match
+	var ragResult rag.SearchResult
+	var searchOptions rag.SearchOptions
 	if ragEnabled {
 		if a.retriever == nil {
 			return models.AgentResponse{}, errors.New("Поиск по документам не настроен.")
 		}
+		searchOptions = ragOptionsForRequest(ragOptions)
 		var err error
-		matches, err = a.retriever.Search(ctx, message, 4)
+		ragResult, err = a.retriever.SearchWithOptions(ctx, message, searchOptions)
 		if err != nil {
 			return models.AgentResponse{}, err
 		}
+		matches = ragResult.Matches
 	}
 	plannerTurn := plannerEnabled(c) && !toolTurn
 	if plannerTurn {
@@ -407,11 +423,39 @@ func (a *Agent) RespondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	report = a.tokenReportLocked(c, request, message, completion.Usage)
 	response := a.responseLocked(c, u, answer, request, report)
 	response.RAGEnabled = ragEnabled
+	if ragEnabled {
+		response.RAGTrace = &models.RAGTrace{OriginalQuery: ragResult.OriginalQuery, RewrittenQuery: ragResult.RewrittenQuery, Options: responseRAGOptions(searchOptions), CandidateCount: len(ragResult.Candidates), FilteredCount: len(matches)}
+	}
 	for _, match := range matches {
-		response.RAGSources = append(response.RAGSources, models.RAGSource{Source: match.Chunk.Source, Section: match.Chunk.Section, ChunkID: match.Chunk.ChunkID, Score: match.Score})
+		response.RAGSources = append(response.RAGSources, models.RAGSource{Source: match.Chunk.Source, Section: match.Chunk.Section, ChunkID: match.Chunk.ChunkID, Score: match.Score, LexicalScore: match.LexicalScore, RerankScore: match.RerankScore})
 	}
 	response.ToolExecutions = append([]models.ToolExecution(nil), completion.ToolExecutions...)
 	return response, nil
+}
+
+func ragOptionsForRequest(input models.RAGOptions) rag.SearchOptions {
+	options := rag.DefaultSearchOptions()
+	if input.CandidateLimit != 0 {
+		options.CandidateLimit = input.CandidateLimit
+	}
+	if input.ResultLimit != 0 {
+		options.ResultLimit = input.ResultLimit
+	}
+	if input.MinSimilarity != 0 {
+		options.MinSimilarity = input.MinSimilarity
+	}
+	if input.Rewrite != nil {
+		options.Rewrite = *input.Rewrite
+	}
+	if input.Rerank != nil {
+		options.Rerank = *input.Rerank
+	}
+	return options
+}
+
+func responseRAGOptions(input rag.SearchOptions) models.RAGOptions {
+	rewrite, rerank := input.Rewrite, input.Rerank
+	return models.RAGOptions{CandidateLimit: input.CandidateLimit, ResultLimit: input.ResultLimit, MinSimilarity: input.MinSimilarity, Rewrite: &rewrite, Rerank: &rerank}
 }
 
 func shouldStageGitHubReport(message string, executions []models.ToolExecution, answer string) bool {
@@ -1820,10 +1864,11 @@ func (c *conversation) configureTaskLocked(task models.TaskState) error {
 }
 
 func normalizePlannerMode(mode string) string {
-	if mode == "disabled" {
+	if mode == "enabled" || mode == "disabled" {
 		return mode
 	}
-	return "enabled"
+	// Older saved state may omit plannerMode. Treat it as the new safe default.
+	return "disabled"
 }
 func plannerEnabled(c *conversation) bool { return c.task.Goal != "" && c.plannerMode != "disabled" }
 
