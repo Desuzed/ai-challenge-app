@@ -567,6 +567,9 @@ func TestClearRemovesPersistentSession(t *testing.T) {
 func TestTaskStateMachinePausesAndResumesFromSavedStep(t *testing.T) {
 	client := &fakeCompleter{answer: "Продолжаю работу"}
 	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "enabled"}); err != nil {
+		t.Fatal(err)
+	}
 	configured, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{
 		Goal:           "Подготовить запуск",
 		Phases:         []string{"planning", "execution", "validation", "done"},
@@ -631,6 +634,9 @@ func TestPausedTaskDoesNotCallModelUntilResumed(t *testing.T) {
 func TestProjectPlannerBuildsDashboardFromChatMessage(t *testing.T) {
 	client := &fakeCompleter{answer: `{"answer":"Черновик ТЗ готов.","plan":{"specification":"MVP: клиентское приложение с каталогом, корзиной и оформлением заказа.","currentStep":"Согласовать состав экранов","expectedAction":"Подтвердить границы MVP","openQuestions":["Нужен ли поиск?"],"decisions":["Делаем только текстовое ТЗ"],"nextSteps":["Описать пользовательские сценарии"]}}`}
 	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "enabled"}); err != nil {
+		t.Fatal(err)
+	}
 	result, err := agent.Respond(context.Background(), "session", "Разработка MVP приложения\n\n- Цель: «Сделать MVP приложения доставки еды».\n- Этапы: `planning → execution → validation → done`.\n- Шаг: «Собрать список ключевых экранов».")
 	if err != nil {
 		t.Fatal(err)
@@ -788,6 +794,14 @@ func TestPlannerModeCanBeChangedBeforeAnyTaskExists(t *testing.T) {
 	}
 }
 
+func TestPlannerIsDisabledByDefaultForNewConversation(t *testing.T) {
+	agent := New(&fakeCompleter{})
+	state := agent.State("new-session")
+	if state.PlannerMode != "disabled" {
+		t.Fatalf("default planner mode = %q, want disabled", state.PlannerMode)
+	}
+}
+
 func TestGlobalInvariantSurvivesNewSession(t *testing.T) {
 	store := NewJSONStore(filepath.Join(t.TempDir(), "invariants.json"))
 	first, err := NewPersistent(&fakeCompleter{}, store)
@@ -810,6 +824,9 @@ func TestGlobalInvariantSurvivesNewSession(t *testing.T) {
 func TestPauseInFlightInterruptsPlannerBeforeProviderWork(t *testing.T) {
 	client := &fakeCompleter{answer: "Не должен быть получен"}
 	agent := New(client)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "enabled"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "ТЗ", Phases: []string{"planning", "done"}}}); err != nil {
 		t.Fatal(err)
 	}
