@@ -80,6 +80,117 @@ func TestRAGToggleAddsSourcesOnlyToEnabledRequest(t *testing.T) {
 	}
 }
 
+func TestRAGStructuredEnvelopeAcceptsWrappedJSONAndRejectsTruncation(t *testing.T) {
+	question := "Чем сохранённая история отличается от сообщений, отправляемых модели в текущем запросе?"
+	forms := []struct {
+		name         string
+		wrap         func(string) string
+		finishReason string
+		wantValid    bool
+		wantReason   string
+	}{
+		{"plain", func(value string) string { return value }, "stop", true, ""},
+		{"markdown-fence", func(value string) string { return "```json\n" + value + "\n```" }, "stop", true, ""},
+		{"surrounding-prose", func(value string) string { return "Ответ в формате JSON:\n" + value + "\nГотово." }, "stop", true, ""},
+		{"truncated-at-token-limit", func(value string) string { return strings.TrimSuffix(value, "}") }, "length", false, "structured_output_truncated"},
+		{"nested-envelope-inside-truncated-root", func(value string) string { return `{"nested":` + value }, "stop", false, "invalid_structured_output"},
+		{"two-envelopes", func(value string) string { return value + "\n" + value }, "stop", false, "invalid_structured_output"},
+	}
+	for _, test := range forms {
+		t.Run(test.name, func(t *testing.T) {
+			a, client := makeRAGFixture(t, []float64{1, 0}, "", models.ModelUsage{})
+			searchOptions := rag.DefaultSearchOptions()
+			searchOptions.Rewrite = false
+			searchOptions.Rerank = false
+			found, err := a.retriever.SearchWithOptions(context.Background(), question, searchOptions)
+			if err != nil || len(found.Matches) == 0 {
+				t.Fatalf("fixture retrieval failed: matches=%d err=%v", len(found.Matches), err)
+			}
+			quote := strings.TrimSpace(found.Matches[0].Chunk.Text)
+			validJSON := fmt.Sprintf(`{"answer":"Подтверждённый факт о хранении.","claims":[{"text":"История агента хранится в локальном JSON-файле.","evidence":[{"chunkId":%q,"quote":%q}]}]}`, found.Matches[0].Chunk.ChunkID, quote)
+			client.answer = test.wrap(validJSON)
+			client.finishReason = test.finishReason
+			structuredClient := &structuredFakeCompleter{fakeCompleter: client}
+			a.client = structuredClient
+			response, err := a.RespondWithUserOptionsRAGConfigured(context.Background(), "u", "s", question, 4, models.StrategySlidingWindow, models.DeepSeekFlashModel, true, models.RAGOptions{Rewrite: boolPointer(false), Rerank: boolPointer(false)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantValid {
+				if response.RAGAbstained || len(response.RAGSources) != 1 || response.RAGSources[0].Quote != quote || !strings.Contains(response.Answer, "История агента хранится в локальном JSON-файле") {
+					t.Fatalf("valid structured output was rejected or ungrounded: %#v", response)
+				}
+				if response.RAGTrace == nil || !response.RAGTrace.StructuredOutput || response.RAGTrace.OutputTokenBudget != 2200 || response.RAGTrace.CompletionFinishReason != "stop" || response.RAGTrace.CompletionCharacters == 0 || structuredClient.calls != 1 || len(client.settings) != 1 || client.settings[0].MaxTokens != 2200 {
+					t.Fatalf("structured completion diagnostics missing: trace=%#v calls=%d settings=%#v", response.RAGTrace, structuredClient.calls, client.settings)
+				}
+			} else if !response.RAGAbstained || response.RAGReason != test.wantReason || len(response.RAGSources) != 0 || strings.Contains(response.Answer, "История агента хранится") {
+				t.Fatalf("malformed output was not safely rejected with diagnostics: %#v", response)
+			}
+		})
+	}
+}
+
+func TestDetailedGroundedRequestOverridesEarlierBriefPreferenceAndReservesMoreTokens(t *testing.T) {
+	question := "Подготовь подробное итоговое объяснение для моего видео."
+	a, client := makeRAGFixture(t, []float64{1, 0}, "", models.ModelUsage{})
+	if _, err := a.RespondWithUserOptionsRAGConfigured(context.Background(), "u", "s", "Ограничения: краткий итоговый ответ", 4, models.StrategySlidingWindow, models.DeepSeekFlashModel, false, models.RAGOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	match, err := a.retriever.SearchWithOptions(context.Background(), question, rag.DefaultSearchOptions())
+	if err != nil || len(match.Matches) == 0 {
+		t.Fatalf("fixture retrieval failed: result=%#v err=%v", match, err)
+	}
+	quote := strings.TrimSpace(match.Matches[0].Chunk.Text)
+	client.answer = fmt.Sprintf(`{"answer":"Краткий и непроверяемый пересказ.","claims":[{"text":"Развёрнутое подтверждённое объяснение первого этапа.","evidence":[{"chunkId":%q,"quote":%q}]}]}`, match.Matches[0].Chunk.ChunkID, quote)
+	structured := &structuredFakeCompleter{fakeCompleter: client}
+	a.client = structured
+	response, err := a.RespondWithUserOptionsRAGConfigured(context.Background(), "u", "s", question, 4, models.StrategySlidingWindow, models.DeepSeekFlashModel, true, models.RAGOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.settings) != 2 || client.settings[1].MaxTokens != detailedRAGMaxTokens || response.Tokens.ReservedOutputTokens != detailedRAGMaxTokens || response.RAGTrace == nil || response.RAGTrace.OutputTokenBudget != detailedRAGMaxTokens {
+		t.Fatalf("detailed response budget was not applied consistently: settings=%#v tokens=%#v trace=%#v", client.settings, response.Tokens, response.RAGTrace)
+	}
+	if len(response.RAGSources) != 1 || response.RAGSources[0].Quote != quote || !strings.Contains(response.Answer, "Итоговое объяснение\n1. Развёрнутое подтверждённое объяснение первого этапа.") || !strings.Contains(response.Answer, quote) || strings.Contains(response.Answer, "Краткий и непроверяемый пересказ") {
+		t.Fatalf("detailed answer was not rendered from verified claims and sources: %#v", response)
+	}
+	request := fmt.Sprint(client.requests[len(client.requests)-1])
+	if !strings.Contains(request, "приоритет над более ранней просьбой о кратком стиле") || !strings.Contains(request, "Ограничения (ход 1): краткий итоговый ответ") {
+		t.Fatalf("latest detailed style did not override older preference explicitly: %s", request)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func TestRAGPlannerAppliesOnlyCanonicalValidatedEnvelope(t *testing.T) {
+	question := "Уточни текущий план по документации."
+	a, client := makeRAGFixture(t, []float64{1, 0}, "", models.ModelUsage{})
+	searchOptions := rag.DefaultSearchOptions()
+	searchOptions.Rewrite, searchOptions.Rerank = false, false
+	found, err := a.retriever.SearchWithOptions(context.Background(), question, searchOptions)
+	if err != nil || len(found.Matches) == 0 {
+		t.Fatalf("fixture retrieval failed: matches=%d err=%v", len(found.Matches), err)
+	}
+	quote := strings.TrimSpace(found.Matches[0].Chunk.Text)
+	client.answer = fmt.Sprintf("Ответ ниже:\n```json\n{\"answer\":\"План обновлён по пользовательской цели.\",\"claims\":[{\"text\":\"История агента хранится в локальном JSON-файле.\",\"evidence\":[{\"chunkId\":%q,\"quote\":%q}]}],\"plan\":{\"phase\":\"planning\",\"specification\":\"Проверенная спецификация\",\"currentStep\":\"Сверить шаги\",\"expectedAction\":\"Подтвердить план\",\"openQuestions\":[],\"decisions\":[],\"nextSteps\":[\"Проверить цитату\"]}}\n```\nГотово.", found.Matches[0].Chunk.ChunkID, quote)
+	if _, err := a.ApplyContextCommandForUser("u", "s", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "enabled"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ApplyContextCommandForUser("u", "s", models.ContextCommand{Action: "configure_task", Task: models.TaskState{Goal: "Объяснить хранение", Phases: []string{"planning", "execution"}}}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := a.RespondWithUserOptionsRAGConfigured(context.Background(), "u", "s", question, 4, models.StrategySlidingWindow, models.DeepSeekFlashModel, true, models.RAGOptions{Rewrite: boolPointer(false), Rerank: boolPointer(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.RAGAbstained || len(response.RAGSources) != 1 || response.Task.Specification != "Проверенная спецификация" || response.Task.Phase != "planning" || response.Task.PlanApproved {
+		t.Fatalf("canonical grounded planner update was rejected or advanced lifecycle: %#v", response)
+	}
+	if !strings.Contains(response.Answer, "Предложение по плану задачи") || strings.Contains(response.Answer, "Ответ ниже:") || strings.Contains(response.Answer, "Готово.") {
+		t.Fatalf("planner response escaped canonical JSON root: %q", response.Answer)
+	}
+}
+
 func TestValidateGroundedClaimsRequiresExactEvidenceForEveryClaim(t *testing.T) {
 	matches := []rag.Match{{Chunk: ragindex.Chunk{ChunkID: "chunk-1", Text: "History is stored in a local JSON file."}}}
 	valid := `{"claims":[{"text":"History is stored locally.","evidence":[{"chunkId":"chunk-1","quote":"stored in a local JSON file"}]}]}`
@@ -136,7 +247,7 @@ func TestRAGBelowThresholdAbstainsWithoutModelCallAndReturnsEmptyJSONSources(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.requests) != 0 || !response.RAGModelCallSkipped || !response.RAGAbstained || response.RAGReason == "" {
+	if len(client.requests) != 0 || !response.RAGModelCallSkipped || !response.RAGAbstained || response.RAGReason != "retrieval_empty" || response.RAGTrace == nil || response.RAGTrace.ClaimedCount != 0 || response.RAGTrace.VerifiedClaimCount != 0 {
 		t.Fatalf("expected pre-model refusal; client calls=%d response=%#v", len(client.requests), response)
 	}
 	if !strings.HasPrefix(response.Answer, "Не знаю") || !strings.Contains(response.Answer, "Уточните") || response.RAGSources == nil || len(response.RAGSources) != 0 {
@@ -158,6 +269,17 @@ func TestRAGBelowThresholdAbstainsWithoutModelCallAndReturnsEmptyJSONSources(t *
 	}
 }
 
+func TestRAGTraceDistinguishesModelNoClaimsFromEmptyRetrieval(t *testing.T) {
+	a, client := makeRAGFixture(t, []float64{1, 0}, `{"claims":[]}`, models.ModelUsage{})
+	response, err := a.RespondWithUserOptionsRAG(context.Background(), "u", "s", "Где хранится история агента?", 10, models.StrategySlidingWindow, models.DeepSeekFlashModel, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.RAGReason != "model_no_claims" || response.RAGTrace == nil || response.RAGTrace.ClaimedCount != 0 || response.RAGTrace.VerifiedClaimCount != 0 || len(client.requests) != 1 {
+		t.Fatalf("empty model claims were confused with retrieval failure: %#v", response)
+	}
+}
+
 func TestRAGInvalidQuoteAbstainsAndPersistsTheSameAnswerWithUsage(t *testing.T) {
 	answer := `{"claims":[{"text":"Unsupported answer","evidence":[{"chunkId":"invalid-id","quote":"fabricated quote"}]}]}`
 	usage := models.ModelUsage{InputTokens: 321, OutputTokens: 54}
@@ -166,7 +288,7 @@ func TestRAGInvalidQuoteAbstainsAndPersistsTheSameAnswerWithUsage(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.requests) != 1 || !response.RAGAbstained || response.RAGModelCallSkipped || len(response.RAGSources) != 0 || response.RAGSources == nil || !strings.HasPrefix(response.Answer, "Не знаю") {
+	if len(client.requests) != 1 || !response.RAGAbstained || response.RAGModelCallSkipped || len(response.RAGSources) != 0 || response.RAGSources == nil || !strings.HasPrefix(response.Answer, "Не знаю") || response.RAGReason != "invalid_evidence" || response.RAGTrace == nil || response.RAGTrace.ClaimedCount != 1 || response.RAGTrace.VerifiedClaimCount != 0 {
 		t.Fatalf("invalid evidence was not refused: %#v", response)
 	}
 	if got := response.Messages[len(response.Messages)-1].Content; got != response.Answer {
@@ -178,11 +300,23 @@ func TestRAGInvalidQuoteAbstainsAndPersistsTheSameAnswerWithUsage(t *testing.T) 
 }
 
 type fakeCompleter struct {
-	requests [][]models.ChatMessage
-	models   []string
-	answer   string
-	err      error
-	usage    models.ModelUsage
+	requests     [][]models.ChatMessage
+	models       []string
+	settings     []models.GenerationSettings
+	answer       string
+	finishReason string
+	err          error
+	usage        models.ModelUsage
+}
+
+type structuredFakeCompleter struct {
+	*fakeCompleter
+	calls int
+}
+
+func (f *structuredFakeCompleter) CompleteMessagesModelJSON(ctx context.Context, model string, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
+	f.calls++
+	return f.fakeCompleter.CompleteMessagesModel(ctx, model, messages, settings)
 }
 
 func (f *fakeCompleter) CompleteMessagesModel(ctx context.Context, model string, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
@@ -209,7 +343,7 @@ func TestPersistentAgentRestoresHistoryAfterRestart(t *testing.T) {
 	if _, err := secondAgent.Respond(context.Background(), "session-a", "Какой мой любимый цвет?"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := secondClient.requests[0][1:], []models.ChatMessage{
+	if got, want := secondClient.requests[0][len(secondClient.requests[0])-3:], []models.ChatMessage{
 		{Role: "user", Content: "Мой любимый цвет — зелёный"},
 		{Role: "assistant", Content: "Запомнил"},
 		{Role: "user", Content: "Какой мой любимый цвет?"},
@@ -290,6 +424,81 @@ func TestAgentUsesMCPAndUploadsWithoutConfirmation(t *testing.T) {
 	}
 	if len(client.tools) == 0 || len(client.tools[0]) != 3 || client.tools[0][2].Function.Name != "save_current_report_to_github" {
 		t.Fatalf("tools passed to model = %#v", client.tools)
+	}
+}
+
+func TestRAGToolTurnParsesGroundedEnvelopeAndKeepsMCPProvenance(t *testing.T) {
+	base, _, chunkID, quote := newScenarioAgent(t, nil, false)
+	client := &scriptedToolClient{completions: []models.ModelCompletion{{
+		Answer: fmt.Sprintf(`{"answer":"Найден файл demo.mov.","claims":[{"text":%q,"evidence":[{"chunkId":%q,"quote":%q}]}]}`, quote, chunkID, quote),
+	}}}
+	base.client = client
+	runtime := &fakeToolRuntime{}
+	base.SetToolRuntime(runtime)
+
+	response, err := base.RespondWithUserOptionsRAGConfigured(context.Background(), "u", "s", "Покажи список видео на рабочем столе", 4, models.StrategySlidingWindow, models.DeepSeekFlashModel, true, models.RAGOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(response.Answer, "Найден файл demo.mov.") || strings.Contains(response.Answer, `{"answer"`) {
+		t.Fatalf("visible response did not extract envelope answer: %q", response.Answer)
+	}
+	if !strings.Contains(response.Answer, "Факты из документов") || !strings.Contains(response.Answer, "Источники MCP") {
+		t.Fatalf("document and MCP provenance were not both rendered: %q", response.Answer)
+	}
+	if len(response.RAGSources) != 2 || !strings.HasPrefix(response.RAGSources[0].Source, "guide.md") || response.RAGSources[1].Source != "MCP:list_desktop_videos" || response.RAGSources[1].Quote == "" {
+		t.Fatalf("sources should include validated document and MCP evidence: %#v", response.RAGSources)
+	}
+	if len(runtime.calls) != 1 || runtime.calls[0].name != "list_desktop_videos" {
+		t.Fatalf("MCP calls = %#v", runtime.calls)
+	}
+}
+
+type trustedWeatherToolRuntime struct{}
+
+func (trustedWeatherToolRuntime) ToolsForModel(context.Context) ([]models.ToolDefinition, error) {
+	return []models.ToolDefinition{
+		{Type: "function", Function: models.ToolFunction{Name: "weather_history", Parameters: map[string]any{"type": "object"}}},
+		{Type: "function", Function: models.ToolFunction{Name: "stop_weather_scheduler", Parameters: map[string]any{"type": "object"}}},
+	}, nil
+}
+
+func (trustedWeatherToolRuntime) CallForModel(_ context.Context, name string, _ map[string]any) (string, bool, error) {
+	if name == "weather_history" {
+		return `{"measurementCount":1,"observations":[{"collectedAt":"2026-10-05T12:00:00Z","condition":"ясно","temperatureC":12,"apparentTemperatureC":11,"humidityPercent":50,"precipitationMM":0,"windSpeedKMH":3}]}`, false, nil
+	}
+	return `{"stopped":true}`, false, nil
+}
+
+func TestRAGTrustedServerToolSuccessKeepsWeatherAcknowledgments(t *testing.T) {
+	cases := []struct {
+		name, input, tool, expected string
+	}{
+		{"weather-history", "Покажи историю погоды", "weather_history", "Все сохранённые измерения погоды"},
+		{"stop-weather-scheduler", "Останови сбор погоды", "stop_weather_scheduler", "Фоновый сбор погоды остановлен"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			base, _, _, _ := newScenarioAgent(t, nil, false)
+			client := &scriptedToolClient{completions: []models.ModelCompletion{{ToolCalls: []models.ToolCall{{
+				ID: "weather-1", Type: "function", Function: models.ToolCallFunction{Name: test.tool, Arguments: `{}`},
+			}}}}}
+			base.client = client
+			base.SetToolRuntime(trustedWeatherToolRuntime{})
+			response, err := base.RespondWithUserOptionsRAGConfigured(context.Background(), "u", "s", test.input, 4, models.StrategySlidingWindow, models.DeepSeekFlashModel, true, models.RAGOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(response.Answer, test.expected) || !strings.Contains(response.Answer, "Источники MCP") || strings.Contains(response.Answer, "проверку формата") {
+				t.Fatalf("trusted server acknowledgment was rejected: %q", response.Answer)
+			}
+			if len(response.RAGSources) != 1 || response.RAGSources[0].Source != "MCP:"+test.tool || response.RAGTrace == nil {
+				t.Fatalf("MCP source/trace missing: %#v", response)
+			}
+			if len(response.ToolExecutions) != 1 || response.ToolExecutions[0].IsError {
+				t.Fatalf("expected successful execution: %#v", response.ToolExecutions)
+			}
+		})
 	}
 }
 
@@ -436,6 +645,43 @@ func TestToolIntentRecognizesReportWordingVariants(t *testing.T) {
 		if !toolIntent(message) {
 			t.Fatalf("toolIntent(%q) = false", message)
 		}
+	}
+}
+
+func TestEducationalRAGQuestionsDoNotTriggerMCPButExplicitMediaActionsDo(t *testing.T) {
+	for _, message := range []string{
+		"Цель: объяснить архитектуру RAG и памяти задачи для учебного видео.\nТермин: память задачи = отдельно сохранённые цель и ограничения.\nКакие этапы проходит новый вопрос в обычном чате с включённым RAG?",
+		"Какие метаданные позволяют показать источник найденного фрагмента?",
+		"Подготовь итоговое объяснение для моего видео: путь вопроса, поиск, память, проверка цитат и сохранение истории.",
+	} {
+		if toolIntent(message) {
+			t.Errorf("educational RAG question triggered MCP: %q", message)
+		}
+	}
+	for _, message := range []string{"Загрузи видео demo.mov на Яндекс Диск", "Сколько длится видео на рабочем столе?", "Какая сейчас погода в Москве?"} {
+		if !toolIntent(message) {
+			t.Errorf("explicit tool request was missed: %q", message)
+		}
+	}
+}
+
+func TestEducationalRAGQuestionsWithMCPRuntimeUseRegularCompletion(t *testing.T) {
+	client := &fakeCompleter{answer: "Объясняю по документации проекта."}
+	runtime := &newsPipelineRuntime{}
+	a := New(client)
+	a.SetToolRuntime(runtime)
+	questions := []string{
+		"Цель: объяснить архитектуру RAG для учебного видео.\nТермин: память задачи = сведения пользователя.\nКакие этапы проходит вопрос?",
+		"Какие метаданные показывают источник фрагмента?",
+		"Подготовь итоговое объяснение для моего видео: поиск, память, цитаты и сохранение истории.",
+	}
+	for i, question := range questions {
+		if _, err := a.Respond(context.Background(), "s", question, 4); err != nil {
+			t.Fatalf("question %d: %v", i+1, err)
+		}
+	}
+	if len(client.requests) != len(questions) || len(runtime.calls) != 0 {
+		t.Fatalf("educational requests used MCP unexpectedly: model=%d MCP=%#v", len(client.requests), runtime.calls)
 	}
 }
 
@@ -602,6 +848,18 @@ func TestToolFollowupIntentUsesWeatherContextForEveryMeasurement(t *testing.T) {
 	}
 	if !toolFollowupIntent("да", previous) {
 		t.Fatal("weather acknowledgement must activate MCP tools")
+	}
+}
+
+func TestToolFollowupNeedsRealWeatherOrVideoAssetContext(t *testing.T) {
+	if toolFollowupIntent("Какие метаданные у найденного фрагмента?", []models.ChatMessage{{Role: "assistant", Content: "Выбранный планировщик учитывается при сборе RAG-контекста"}}) {
+		t.Fatal("planner/RAG wording must not keep MCP intent alive")
+	}
+	if toolFollowupIntent("Какие метаданные у найденного фрагмента?", []models.ChatMessage{{Role: "assistant", Content: "Для учебного видео RAG ищет по метаданным документа."}}) {
+		t.Fatal("educational video wording must not look like a video asset")
+	}
+	if !toolFollowupIntent("Нет, напиши каждое измерение", []models.ChatMessage{{Role: "assistant", Content: "Вызов weather_summary: Сводка по Москве."}}) {
+		t.Fatal("real weather tool response must keep weather follow-ups active")
 	}
 }
 
@@ -922,8 +1180,7 @@ func TestGlobalInvariantSurvivesNewSession(t *testing.T) {
 }
 
 func TestPauseInFlightInterruptsPlannerBeforeProviderWork(t *testing.T) {
-	client := &fakeCompleter{answer: "Не должен быть получен"}
-	agent := New(client)
+	agent, client, _, _ := newScenarioAgent(t, nil, false)
 	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_planner_mode", PlannerMode: "enabled"}); err != nil {
 		t.Fatal(err)
 	}
@@ -933,7 +1190,7 @@ func TestPauseInFlightInterruptsPlannerBeforeProviderWork(t *testing.T) {
 	result := make(chan models.AgentResponse, 1)
 	failure := make(chan error, 1)
 	go func() {
-		response, err := agent.Respond(context.Background(), "session", "Подготовь черновик ТЗ")
+		response, err := agent.RespondWithUserOptionsRAGConfigured(context.Background(), "session", "session", "Подготовь черновик ТЗ", 4, models.StrategySlidingWindow, models.DeepSeekFlashModel, true, models.RAGOptions{})
 		if err != nil {
 			failure <- err
 			return
@@ -957,7 +1214,7 @@ func TestPauseInFlightInterruptsPlannerBeforeProviderWork(t *testing.T) {
 	case err := <-failure:
 		t.Fatal(err)
 	case response := <-result:
-		if response.Task.Status != models.TaskPaused || response.PendingMessage != "Подготовь черновик ТЗ" || !strings.Contains(response.Answer, "приостановлена") || len(client.requests) != 0 {
+		if response.Task.Status != models.TaskPaused || response.PendingMessage != "Подготовь черновик ТЗ" || !strings.Contains(response.Answer, "приостановлена") || !strings.Contains(response.Answer, "Источники:") || response.RAGTrace == nil || !response.RAGEnabled || !response.RAGModelCallSkipped || len(response.RAGSources) != 0 || len(client.requests) != 0 {
 			t.Fatalf("pause response = %#v, calls=%d", response, len(client.requests))
 		}
 	case <-time.After(time.Second):
@@ -1082,12 +1339,13 @@ func TestClearKeepsLongTermMemoryButRemovesDialogueAndWorkingMemory(t *testing.T
 	}
 }
 
-func (f *fakeCompleter) CompleteMessages(_ context.Context, messages []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
+func (f *fakeCompleter) CompleteMessages(_ context.Context, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
 	f.requests = append(f.requests, append([]models.ChatMessage(nil), messages...))
+	f.settings = append(f.settings, settings)
 	if f.err != nil {
 		return models.ModelCompletion{}, f.err
 	}
-	return models.ModelCompletion{Answer: f.answer, Usage: f.usage}, nil
+	return models.ModelCompletion{Answer: f.answer, FinishReason: f.finishReason, Usage: f.usage}, nil
 }
 
 func TestRespondReportsExactProviderUsageAndCumulativeCost(t *testing.T) {
@@ -1103,7 +1361,7 @@ func TestRespondReportsExactProviderUsageAndCumulativeCost(t *testing.T) {
 	if result.Tokens.EstimatedRequestTokens == 0 || result.Tokens.CurrentMessageTokens == 0 || result.Tokens.CumulativeCostUSD <= 0 {
 		t.Fatalf("incomplete token report = %#v", result.Tokens)
 	}
-	if result.Tokens.CacheMissTokens != 120 || len(result.RequestMessages) != 2 || result.RequestMessages[1].Content != "Короткий вопрос" {
+	if result.Tokens.CacheMissTokens != 120 || len(result.RequestMessages) != 3 || result.RequestMessages[len(result.RequestMessages)-1].Content != "Короткий вопрос" || !strings.Contains(result.RequestMessages[1].Content, "Актуальная память задачи") {
 		t.Fatalf("request details = %#v, tokens = %#v", result.RequestMessages, result.Tokens)
 	}
 }
@@ -1159,7 +1417,7 @@ func TestRespondBuildsHistoryPerSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := client.requests[1][1:], []models.ChatMessage{
+	if got, want := client.requests[1][len(client.requests[1])-3:], []models.ChatMessage{
 		{Role: "user", Content: "Первый вопрос"}, {Role: "assistant", Content: "Первый ответ"}, {Role: "user", Content: "Второй вопрос"},
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("second LLM request = %#v, want %#v", got, want)
@@ -1170,7 +1428,7 @@ func TestRespondBuildsHistoryPerSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := other.Messages, []models.ChatMessage{{Role: "user", Content: "Другой вопрос"}, {Role: "assistant", Content: "Другой диалог"}}; !reflect.DeepEqual(got, want) {
+	if got, want := other.Messages[len(other.Messages)-2:], []models.ChatMessage{{Role: "user", Content: "Другой вопрос"}, {Role: "assistant", Content: "Другой диалог"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("second session history = %#v, want %#v", got, want)
 	}
 }
@@ -1199,14 +1457,14 @@ func TestSlidingWindowKeepsOnlyRecentNWithoutSummaryCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Messages) != 2 || result.Messages[0].Content != "Третий вопрос" {
-		t.Fatalf("raw history = %#v, want only last two messages", result.Messages)
+	if len(result.Messages) != 6 || result.Messages[4].Content != "Третий вопрос" {
+		t.Fatalf("archived history = %#v, want all six messages", result.Messages)
 	}
 	if len(client.requests) != 3 {
 		t.Fatalf("calls = %d, want one provider request per user message", len(client.requests))
 	}
 	request := client.requests[2]
-	if len(request) != 3 || request[1].Role != "assistant" || request[1].Content != "Ответ" || request[2].Content != "Третий вопрос" {
+	if len(request) < 3 || request[len(request)-2].Role != "assistant" || request[len(request)-2].Content != "Ответ" || request[len(request)-1].Content != "Третий вопрос" {
 		t.Fatalf("window request = %#v", request)
 	}
 }
@@ -1224,10 +1482,10 @@ func TestFactsSurviveWindowAndAreSentAsSeparateSystemBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Messages) != 2 || len(result.Facts) == 0 {
+	if len(result.Messages) != 6 || len(result.Facts) == 0 {
 		t.Fatalf("state = %#v", result)
 	}
-	if !strings.Contains(client.requests[2][1].Content, "Постоянные факты") || !strings.Contains(client.requests[2][1].Content, "сделать приложение") {
+	if !strings.Contains(client.requests[2][1].Content, "Исторические sticky facts") || !strings.Contains(client.requests[2][1].Content, "сделать приложение") {
 		t.Fatalf("facts prompt = %#v", client.requests[2])
 	}
 }
@@ -1272,7 +1530,7 @@ func TestMemoryLayersAreSeparateAndOnlyExplicitCommandsPersistWorkingAndLongTerm
 	if !strings.Contains(request[2].Content, "Рабочая память") || !strings.Contains(request[2].Content, "task: Экран") {
 		t.Fatalf("working block = %#v", request)
 	}
-	if len(request) != 5 || request[3].Role != "assistant" || request[4].Content != "Что учесть в ответе?" {
+	if len(request) < 6 || request[len(request)-2].Role != "assistant" || request[len(request)-1].Content != "Что учесть в ответе?" {
 		t.Fatalf("short-term window in request = %#v", request)
 	}
 }

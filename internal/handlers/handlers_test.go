@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,6 +31,72 @@ type fakeClient struct {
 	modelPrompt       string
 	messageRequests   [][]models.ChatMessage
 	messageUsage      models.ModelUsage
+}
+
+func TestAgentChatPersistsRecentMessagesThroughPatchGetAndRestart(t *testing.T) {
+	client := &fakeClient{answer: "Ответ"}
+	store := agent.NewJSONStore(filepath.Join(t.TempDir(), "agent-history.json"))
+	firstAgent, err := agent.NewPersistent(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: agentSessionCookie, Value: "n-persistence-session-id-long-enough"}
+	get := func(handler *Handler) models.AgentResponse {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/api/agent/chat", nil)
+		request.AddCookie(cookie)
+		recorder := httptest.NewRecorder()
+		handler.AgentChat(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET status=%d: %s", recorder.Code, recorder.Body.String())
+		}
+		var response models.AgentResponse
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	patch := func(handler *Handler, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPatch, "/api/agent/chat", strings.NewReader(body))
+		request.AddCookie(cookie)
+		recorder := httptest.NewRecorder()
+		handler.AgentChat(recorder, request)
+		return recorder
+	}
+	firstHandler := New(client)
+	firstHandler.SetAgent(firstAgent)
+	if initial := get(firstHandler); initial.RecentMessages != 32 {
+		t.Fatalf("new session default N=%d, want 32", initial.RecentMessages)
+	}
+	updated := patch(firstHandler, `{"action":"set_recent_messages","recentMessages":4}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("PATCH status=%d: %s", updated.Code, updated.Body.String())
+	}
+	var patched models.AgentResponse
+	if err := json.NewDecoder(updated.Body).Decode(&patched); err != nil {
+		t.Fatal(err)
+	}
+	if patched.RecentMessages != 4 || get(firstHandler).RecentMessages != 4 {
+		t.Fatalf("PATCH/GET did not retain N=4: patch=%d get=%d", patched.RecentMessages, get(firstHandler).RecentMessages)
+	}
+	invalid := patch(firstHandler, `{"action":"set_recent_messages","recentMessages":1}`)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid N status=%d: %s", invalid.Code, invalid.Body.String())
+	}
+	if got := get(firstHandler).RecentMessages; got != 4 {
+		t.Fatalf("invalid PATCH changed stored N: %d", got)
+	}
+
+	restartedAgent, err := agent.NewPersistent(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedHandler := New(client)
+	restartedHandler.SetAgent(restartedAgent)
+	if got := get(restartedHandler).RecentMessages; got != 4 {
+		t.Fatalf("restart lost persisted N=4: %d", got)
+	}
 }
 
 func (f *fakeClient) CompleteMessages(_ context.Context, messages []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {

@@ -16,6 +16,13 @@ const closeContextSettings = document.querySelector('#close-context-settings');
 const doneContextSettings = document.querySelector('#done-context-settings');
 const contextStrategy = document.querySelector('#context-strategy');
 const recentMessages = document.querySelector('#recent-messages');
+let recentMessagesEditRevision = 0;
+let recentMessagesStateRevision = 0;
+let recentMessagesDirty = false;
+let recentMessagesSaveTimer = null;
+let recentMessagesSaveQueue = null;
+let recentMessagesDrainPromise = null;
+let recentMessagesSaveError = '';
 const strategyDescription = document.querySelector('#strategy-description');
 const status = document.querySelector('#status');
 const chatStatus = document.querySelector('#chat-status');
@@ -36,6 +43,7 @@ const profileFormat = document.querySelector('#profile-format');
 const profileConstraints = document.querySelector('#profile-constraints');
 const saveProfile = document.querySelector('#save-profile');
 const taskState = document.querySelector('#task-state');
+const taskMemoryState = document.querySelector('#task-memory-state');
 const pauseTask = document.querySelector('#pause-task');
 const resumeTask = document.querySelector('#resume-task');
 const approvePlan = document.querySelector('#approve-plan');
@@ -69,7 +77,7 @@ ragEnabledChat.addEventListener('change', syncRAGToggle);
 function selectedRAGOptions() {
   const candidateLimit = Number(ragCandidates.value); const resultLimit = Number(ragResults.value); const minSimilarity = Number(ragThreshold.value);
   if (!Number.isInteger(candidateLimit) || candidateLimit < 1 || candidateLimit > 20 || !Number.isInteger(resultLimit) || resultLimit < 1 || resultLimit > candidateLimit || !Number.isFinite(minSimilarity) || minSimilarity < -1 || minSimilarity > 1) {
-    throw new Error('RAG: top-K до фильтрации — 1…20, top-K после — не больше него, порог — от -1 до 1.');
+    throw new Error('RAG: top-K до фильтрации — 1…20, top-K после — не больше него, cosine-порог — от -1 до 1.');
   }
   return { candidateLimit, resultLimit, minSimilarity, rewrite: ragRewrite.checked, rerank: ragRerank.checked };
 }
@@ -77,7 +85,7 @@ let activeTask = {};
 let activeProfileID = '';
 const messageTimes = new Map();
 const strategyDescriptions = {
-  sliding_window: 'В модель отправляются только последние N сообщений. Ранние реплики удаляются.',
+  sliding_window: 'В модель отправляются последние N сообщений, а полная история сохраняется в архиве.',
   facts: 'В модель отправляются sticky facts и последние N сообщений. Summary не используется.',
 };
 
@@ -336,9 +344,9 @@ function renderInvariants(payload) {
   });
 }
 
-function renderContextState(payload) {
+function renderContextState(payload, { preserveRecentMessages = false } = {}) {
   if (payload.strategy && strategyDescriptions[payload.strategy]) contextStrategy.value = payload.strategy;
-  if (payload.recentMessages) recentMessages.value = payload.recentMessages;
+  if (payload.recentMessages && !preserveRecentMessages) recentMessages.value = payload.recentMessages;
   if (payload.model) {
     selectedAgentModel = payload.model;
     agentModel.value = selectedAgentModel;
@@ -349,6 +357,17 @@ function renderContextState(payload) {
   renderInvariants(payload);
   if (payload.memory) renderMemoryLayers(payload.memory);
   renderProfiles(payload);
+  renderTaskMemory(payload.taskMemory);
+}
+
+function renderTaskMemory(memory = {}) {
+  if (!taskMemoryState) return;
+  const lines = [];
+  if (memory.goal) lines.push(`Цель · ход ${memory.goalTurn}: ${memory.goal}`);
+  for (const [label, items] of [['Уточнения', memory.clarifications], ['Ограничения', memory.constraints], ['Термины', memory.terms]]) {
+    (items || []).forEach((item) => lines.push(`${label} · ход ${item.turn}: ${item.text}`));
+  }
+  taskMemoryState.textContent = lines.length ? lines.join('\n') : 'Явные цели, уточнения, ограничения и термины появятся здесь.';
 }
 
 function renderTokenReport(payload) {
@@ -370,6 +389,8 @@ async function readAgentResponse(response) {
   }
 }
 async function patchAgent(command, fallback) {
+  const recentEditRevision = recentMessagesEditRevision;
+  const recentStateRevision = recentMessagesStateRevision;
   const response = await fetch('/api/agent/chat', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(command) });
   const payload = await readAgentResponse(response);
   if (!response.ok) throw new Error(payload.error || fallback);
@@ -378,7 +399,8 @@ async function patchAgent(command, fallback) {
     requestLog.textContent = `БРАУЗЕР → BACKEND\nPATCH /api/agent/chat\n${prettyJSON(command)}\n\nПАУЗА → сервер получил сигнал остановки активной работы.`;
     return payload;
   }
-  renderContextState(payload);
+  const preserveRecent = recentMessagesDirty || recentEditRevision !== recentMessagesEditRevision || recentStateRevision !== recentMessagesStateRevision;
+  renderContextState(payload, { preserveRecentMessages: preserveRecent });
   renderAgentHistory(payload.messages);
   requestLog.textContent = `БРАУЗЕР → BACKEND\nPATCH /api/agent/chat\n${prettyJSON(command)}`;
   return payload;
@@ -606,16 +628,98 @@ contextStrategy.addEventListener('change', async () => {
   try { await saveStrategy(); setStatus('Стратегия контекста обновлена.'); }
   catch (error) { setStatus(readableFetchError(error, 'Не удалось изменить стратегию.'), true); }
 });
-recentMessages.addEventListener('change', () => {
+function validRecentMessagesInput() {
   const n = Number(recentMessages.value);
-  if (!Number.isInteger(n) || n < 2 || n > 40) { setStatus('N должен быть целым числом от 2 до 40.', true); recentMessages.focus(); }
+  return Number.isInteger(n) && n >= 2 && n <= 40;
+}
+
+function scheduleRecentMessagesSave(immediate = false) {
+  clearTimeout(recentMessagesSaveTimer);
+  recentMessagesSaveTimer = null;
+  if (!validRecentMessagesInput()) {
+    recentMessagesSaveQueue = null;
+    recentMessagesSaveError = 'N должен быть целым числом от 2 до 40.';
+    setStatus(recentMessagesSaveError, true);
+    return;
+  }
+  const pending = { value: Number(recentMessages.value), revision: recentMessagesEditRevision };
+  if (immediate) {
+    recentMessagesSaveQueue = pending;
+    void drainRecentMessagesSaves();
+  } else {
+    recentMessagesSaveTimer = window.setTimeout(() => {
+      recentMessagesSaveTimer = null;
+      recentMessagesSaveQueue = pending;
+      void drainRecentMessagesSaves();
+    }, 300);
+  }
+}
+
+function drainRecentMessagesSaves() {
+  if (recentMessagesDrainPromise) return recentMessagesDrainPromise;
+  recentMessagesDrainPromise = (async () => {
+    while (recentMessagesSaveQueue) {
+      const pending = recentMessagesSaveQueue;
+      recentMessagesSaveQueue = null;
+      try {
+        const response = await fetch('/api/agent/chat', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+          body: JSON.stringify({ action: 'set_recent_messages', recentMessages: pending.value }),
+        });
+        const payload = await readAgentResponse(response);
+        if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить N.');
+        recentMessagesStateRevision++;
+        recentMessagesSaveError = '';
+        if (pending.revision === recentMessagesEditRevision && Number(recentMessages.value) === pending.value && !recentMessagesSaveQueue) {
+          recentMessagesDirty = false;
+        }
+        renderAgentHistory(payload.messages);
+        renderContextState(payload, { preserveRecentMessages: true });
+        if (pending.revision === recentMessagesEditRevision && !recentMessagesDirty) setStatus(`N=${pending.value} сохранено.`);
+      } catch (error) {
+        recentMessagesSaveError = readableFetchError(error, 'Не удалось сохранить N.');
+        setStatus(recentMessagesSaveError, true);
+        recentMessagesSaveQueue = null;
+      }
+    }
+  })().finally(() => { recentMessagesDrainPromise = null; });
+  return recentMessagesDrainPromise;
+}
+
+async function flushRecentMessagesSave() {
+  clearTimeout(recentMessagesSaveTimer);
+  recentMessagesSaveTimer = null;
+  if (!validRecentMessagesInput()) throw new Error('N должен быть целым числом от 2 до 40.');
+  if (recentMessagesDirty) {
+    recentMessagesSaveQueue = { value: Number(recentMessages.value), revision: recentMessagesEditRevision };
+  }
+  await drainRecentMessagesSaves();
+  if (recentMessagesDirty) throw new Error(recentMessagesSaveError || 'Не удалось сохранить N.');
+}
+
+recentMessages.addEventListener('input', () => {
+  recentMessagesEditRevision++;
+  recentMessagesDirty = true;
+  recentMessagesSaveError = '';
+  scheduleRecentMessagesSave();
+});
+recentMessages.addEventListener('change', () => {
+  if (!validRecentMessagesInput()) {
+    scheduleRecentMessagesSave(true);
+    recentMessages.focus();
+    return;
+  }
+  scheduleRecentMessagesSave(true);
 });
 
 async function loadAgentHistory() {
+  const editRevision = recentMessagesEditRevision;
+  const stateRevision = recentMessagesStateRevision;
   try {
     const response = await fetch('/api/agent/chat', { cache: 'no-store' }); const payload = await readAgentResponse(response);
     if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить чат.');
-    renderAgentHistory(payload.messages); renderContextState(payload); renderTokenReport(payload);
+    const preserveRecentMessages = recentMessagesDirty || Boolean(recentMessagesDrainPromise) || editRevision !== recentMessagesEditRevision || stateRevision !== recentMessagesStateRevision;
+    renderAgentHistory(payload.messages); renderContextState(payload, { preserveRecentMessages }); renderTokenReport(payload);
   } catch (error) { chatStatus.textContent = readableFetchError(error, 'Не удалось загрузить чат.'); }
 }
 // Scheduled MCP jobs append progress server-side. Polling lets those entries
@@ -623,16 +727,20 @@ async function loadAgentHistory() {
 window.setInterval(loadAgentHistory, 15_000);
 agentForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const message = agentMessage.value.trim(); const n = Number(recentMessages.value);
+  const message = agentMessage.value.trim(); let n = Number(recentMessages.value);
   if (!message) { setStatus('Введите сообщение для агента.', true); agentMessage.focus(); return; }
   if (!Number.isInteger(n) || n < 2 || n > 40) { setStatus('N должен быть целым числом от 2 до 40.', true); recentMessages.focus(); return; }
   let ragOptions;
   try { ragOptions = selectedRAGOptions(); } catch (error) { setStatus(error.message, true); return; }
   agentSubmit.disabled = true;
   setStatus(activeTask.goal ? 'Агент проектирует… Можно нажать «Пауза», чтобы остановить работу.' : 'Агент отвечает…');
-  const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked, ragOptions };
-  requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON(requestBody)}\n\nОжидание ответа…`;
   try {
+    await flushRecentMessagesSave();
+    n = Number(recentMessages.value);
+    recentMessages.disabled = true;
+    const submittedNRevision = recentMessagesEditRevision;
+    const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked, ragOptions };
+    requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON(requestBody)}\n\nОжидание ответа…`;
     const response = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(requestBody) });
     const payload = await readAgentResponse(response);
     requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON({
@@ -649,12 +757,14 @@ agentForm.addEventListener('submit', async (event) => {
       mcpToolExecutions: payload.toolExecutions || [],
     })}`;
     if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ агента.');
+    recentMessagesStateRevision++;
+    if (submittedNRevision === recentMessagesEditRevision && payload.recentMessages === n) recentMessagesDirty = false;
     requestLog.textContent += `\n\nОТВЕТ АГЕНТА\n${payload.answer}`;
-    renderAgentHistory(payload.messages); renderContextState(payload); renderTokenReport(payload);
+    renderAgentHistory(payload.messages); renderContextState(payload, { preserveRecentMessages: submittedNRevision !== recentMessagesEditRevision }); renderTokenReport(payload);
     agentMessage.value = ''; agentMessage.focus();
     setStatus(payload.task?.status === 'paused' ? 'Задача на паузе: запрос к модели не выполнялся.' : 'Готово.');
   } catch (error) { setStatus(readableFetchError(error, 'Не удалось получить ответ агента.'), true); }
-  finally { agentSubmit.disabled = false; }
+  finally { recentMessages.disabled = false; agentSubmit.disabled = false; }
 });
 clearAgentHistory.addEventListener('click', async () => {
   if (!window.confirm('Удалить всю историю этого чата? Это действие нельзя отменить.')) return;

@@ -28,7 +28,8 @@ const OverlapRunes = 150
 var DefaultFiles = []string{
 	"README.md", "main.go", "internal/agent/agent.go",
 	"internal/agent/store.go", "internal/deepseek/client.go",
-	"internal/handlers/handlers.go", "internal/models/models.go",
+	"internal/agent/task_memory.go", "internal/handlers/handlers.go", "internal/models/models.go",
+	"docs/rag-task-chat-corpus.md",
 }
 
 type Document struct {

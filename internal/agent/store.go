@@ -48,6 +48,7 @@ type ConversationState struct {
 	UserID          string                 `json:"userId,omitempty"`
 	ActiveProfileID string                 `json:"activeProfileId,omitempty"`
 	Task            models.TaskState       `json:"task"`
+	TaskMemory      models.TaskMemory      `json:"taskMemory,omitempty"`
 	PendingMessage  string                 `json:"pendingMessage,omitempty"`
 	PlannerMode     string                 `json:"plannerMode,omitempty"`
 	// Profile and LongTermMemory are retained only to migrate the previous
@@ -58,6 +59,18 @@ type ConversationState struct {
 	// in the API response.
 	WorkingMemory  map[string]string            `json:"workingMemory,omitempty"`
 	LongTermMemory map[string]map[string]string `json:"longTermMemory,omitempty"`
+	// MiniChat retains data written by the former isolated mode for migration.
+	// It is never used as a live second conversation.
+	MiniChat       MiniChatState                `json:"miniChat,omitempty"`
+}
+
+// MiniChatState is isolated from the legacy planner, context strategies,
+// profiles, and tool-enabled conversation state.
+type MiniChatState struct {
+	Messages       []models.ChatMessage `json:"messages,omitempty"`
+	Task           models.TaskMemory    `json:"task,omitempty"`
+	Model          string               `json:"model,omitempty"`
+	WindowMessages int                  `json:"windowMessages,omitempty"`
 }
 
 type BranchState struct {
@@ -195,6 +208,8 @@ func copySessions(sessions map[string]ConversationState) map[string]Conversation
 		state.Messages = copyMessages(state.Messages)
 		state.Facts = copyFactsMap(state.Facts)
 		state.WorkingMemory = copyFactsMap(state.WorkingMemory)
+		state.TaskMemory = copyTaskMemory(state.TaskMemory)
+		state.MiniChat = copyLegacyMiniChat(state.MiniChat)
 		state.LongTermMemory = copyLongTermMemory(state.LongTermMemory)
 		state.Task.Phases = append([]string(nil), state.Task.Phases...)
 		state.Task.OpenQuestions = append([]string(nil), state.Task.OpenQuestions...)
