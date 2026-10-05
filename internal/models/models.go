@@ -131,6 +131,21 @@ type AgentRequest struct {
 	RAGOptions     RAGOptions      `json:"ragOptions,omitempty"`
 }
 
+type TaskMemory struct {
+	Goal           string       `json:"goal,omitempty"`
+	GoalQuote      string       `json:"goalQuote,omitempty"`
+	GoalTurn       int          `json:"goalTurn,omitempty"`
+	Clarifications []MemoryNote `json:"clarifications,omitempty"`
+	Constraints    []MemoryNote `json:"constraints,omitempty"`
+	Terms          []MemoryNote `json:"terms,omitempty"`
+}
+
+type MemoryNote struct {
+	Text        string `json:"text"`
+	SourceQuote string `json:"sourceQuote"`
+	Turn        int    `json:"turn"`
+}
+
 // RAGOptions exposes the two stages of document selection in the UI/API.
 // Zero values mean the server's safe teaching defaults.
 type RAGOptions struct {
@@ -142,42 +157,62 @@ type RAGOptions struct {
 }
 
 type RAGSource struct {
-	Source       string  `json:"source"`
-	Section      string  `json:"section"`
-	ChunkID      string  `json:"chunkId"`
-	Quote        string  `json:"quote"`
-	Score        float64 `json:"score"`
-	LexicalScore float64 `json:"lexicalScore,omitempty"`
-	RerankScore  float64 `json:"rerankScore,omitempty"`
+	Source              string  `json:"source"`
+	Section             string  `json:"section"`
+	ChunkID             string  `json:"chunkId"`
+	Quote               string  `json:"quote"`
+	Score               float64 `json:"score"`
+	CandidateSource     string  `json:"candidateSource,omitempty"`
+	QuerySource         string  `json:"querySource,omitempty"`
+	LexicalTermMatches  int     `json:"lexicalTermMatches,omitempty"`
+	LexicalTermCount    int     `json:"lexicalTermCount,omitempty"`
+	LexicalGateMinTerms int     `json:"lexicalGateMinTerms,omitempty"`
+	NumericEvidence     bool    `json:"numericEvidence,omitempty"`
+	LexicalScore        float64 `json:"lexicalScore,omitempty"`
+	RerankScore         float64 `json:"rerankScore,omitempty"`
 }
 
 type RAGTrace struct {
-	OriginalQuery  string     `json:"originalQuery"`
-	RewrittenQuery string     `json:"rewrittenQuery"`
-	Options        RAGOptions `json:"options"`
-	CandidateCount int        `json:"candidateCount"`
-	FilteredCount  int        `json:"filteredCount"`
+	OriginalQuery              string     `json:"originalQuery"`
+	RewrittenQuery             string     `json:"rewrittenQuery"`
+	Options                    RAGOptions `json:"options"`
+	CandidateCount             int        `json:"candidateCount"`
+	FilteredCount              int        `json:"filteredCount"`
+	StructuredOutput           bool       `json:"structuredOutput"`
+	OutputTokenBudget          int        `json:"outputTokenBudget,omitempty"`
+	CompletionFinishReason     string     `json:"completionFinishReason,omitempty"`
+	CompletionCharacters       int        `json:"completionCharacters,omitempty"`
+	VectorCandidateCount       int        `json:"vectorCandidateCount"`
+	VectorFilteredCount        int        `json:"vectorFilteredCount"`
+	LexicalCandidateCount      int        `json:"lexicalCandidateCount"`
+	LexicalGateMatchCount      int        `json:"lexicalGateMatchCount"`
+	LexicalGateMinTerms        int        `json:"lexicalGateMinTerms"`
+	SupplementalQuery          string     `json:"supplementalQuery,omitempty"`
+	SupplementalCandidateCount int        `json:"supplementalCandidateCount,omitempty"`
+	ClaimedCount               int        `json:"claimedCount"`
+	VerifiedClaimCount         int        `json:"verifiedClaimCount"`
 }
 
 // ContextCommand changes context mode or the active branch without asking the
 // model. It keeps branch operations explicit and easy to inspect in the UI.
 type ContextCommand struct {
-	Action       string          `json:"action"`
-	Strategy     ContextStrategy `json:"strategy,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	CheckpointID string          `json:"checkpointId,omitempty"`
-	BranchID     string          `json:"branchId,omitempty"`
-	Layer        MemoryLayer     `json:"layer,omitempty"`
-	Category     string          `json:"category,omitempty"`
-	Key          string          `json:"key,omitempty"`
-	Value        string          `json:"value,omitempty"`
-	Model        string          `json:"model,omitempty"`
-	Profile      UserProfile     `json:"profile,omitempty"`
-	ProfileID    string          `json:"profileId,omitempty"`
-	Task         TaskState       `json:"task,omitempty"`
-	Phase        string          `json:"phase,omitempty"`
-	Invariant    Invariant       `json:"invariant,omitempty"`
-	PlannerMode  string          `json:"plannerMode,omitempty"`
+	Action         string          `json:"action"`
+	RecentMessages int             `json:"recentMessages,omitempty"`
+	Strategy       ContextStrategy `json:"strategy,omitempty"`
+	Name           string          `json:"name,omitempty"`
+	CheckpointID   string          `json:"checkpointId,omitempty"`
+	BranchID       string          `json:"branchId,omitempty"`
+	Layer          MemoryLayer     `json:"layer,omitempty"`
+	Category       string          `json:"category,omitempty"`
+	Key            string          `json:"key,omitempty"`
+	Value          string          `json:"value,omitempty"`
+	Model          string          `json:"model,omitempty"`
+	Profile        UserProfile     `json:"profile,omitempty"`
+	ProfileID      string          `json:"profileId,omitempty"`
+	Task           TaskState       `json:"task,omitempty"`
+	Phase          string          `json:"phase,omitempty"`
+	Invariant      Invariant       `json:"invariant,omitempty"`
+	PlannerMode    string          `json:"plannerMode,omitempty"`
 }
 
 // TaskStatus describes whether a task can currently progress. Pausing is
@@ -246,6 +281,7 @@ type AgentResponse struct {
 	RecentMessages      int                      `json:"recentMessages"`
 	Model               string                   `json:"model"`
 	Task                TaskState                `json:"task"`
+	TaskMemory          TaskMemory               `json:"taskMemory"`
 	PendingMessage      string                   `json:"pendingMessage,omitempty"`
 	GlobalInvariants    []Invariant              `json:"globalInvariants,omitempty"`
 	PlannerMode         string                   `json:"plannerMode"`

@@ -119,6 +119,16 @@ func (c *Client) CompleteMessagesModel(ctx context.Context, modelName string, me
 	return c.completeMessages(ctx, strings.TrimSpace(modelName), messages, settings, nil, nil, settings.MaxTokens, nil)
 }
 
+// CompleteMessagesModelJSON requests provider-enforced JSON mode for callers
+// that validate a structured response. It leaves generation limits and all
+// user-selected parameters unchanged.
+func (c *Client) CompleteMessagesModelJSON(ctx context.Context, modelName string, messages []models.ChatMessage, settings models.GenerationSettings) (Completion, error) {
+	if c.apiKey == "" {
+		return Completion{}, ErrNoAPIKey
+	}
+	return c.completeMessages(ctx, strings.TrimSpace(modelName), messages, settings, &responseFormat{Type: "json_object"}, nil, settings.MaxTokens, nil)
+}
+
 // CompleteMessagesModelWithTools exposes OpenAI-compatible function calling
 // to the application agent. Tool execution remains server-side.
 func (c *Client) CompleteMessagesModelWithTools(ctx context.Context, modelName string, messages []models.ChatMessage, settings models.GenerationSettings, tools []models.ToolDefinition) (Completion, error) {

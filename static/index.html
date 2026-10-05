@@ -42,6 +42,11 @@
 
           <p id="status" class="status" aria-live="polite"></p>
 
+          <details class="task-memory-panel">
+            <summary>Память задачи</summary>
+            <div id="task-memory-state" class="hint task-memory-state">Явные цели, уточнения, ограничения и термины появятся здесь.</div>
+          </details>
+
           <details class="task-panel" aria-labelledby="task-title">
             <summary class="section-heading">
               <div>
@@ -87,19 +92,20 @@
               </label>
               <p id="model-description" class="hint">Выбор сохраняется для текущего браузерного чата.</p>
               <label for="recent-messages">Последних сообщений (N)
-                <input id="recent-messages" type="number" min="2" max="40" value="10" inputmode="numeric">
+                <input id="recent-messages" type="number" min="2" max="40" value="32" inputmode="numeric">
               </label>
+              <p class="hint">Для сценария из 15 обменов установите N=32; полная история сохраняется, а память задачи помогает и при N=4.</p>
               <p id="strategy-description" class="hint">В модель отправляются только последние N сообщений. Ранние реплики удаляются.</p>
               <label class="rag-toggle" for="rag-enabled">Поиск по документам (RAG)
                 <input id="rag-enabled" type="checkbox">
               </label>
               <details class="parameter-section" open>
                 <summary>Reranking и фильтрация</summary>
-                <p class="hint">Сначала берём широкий top-K по эмбеддингам, отсекаем результаты ниже порога, затем lexical heuristic меняет порядок оставшихся. Все числа видны в логе запроса.</p>
+                <p class="hint">Cosine-порог фильтрует vector candidates. Отдельный lexical-канал допускает совпадения минимум двух разных терминов; каналы объединяются до final top-K. Rerank — необязательный второй этап. Trace показывает канал и исходный cosine.</p>
                 <div class="rag-settings">
                   <label for="rag-candidates">Top-K до фильтрации<input id="rag-candidates" type="number" min="1" max="20" value="8"></label>
                   <label for="rag-results">Top-K после фильтрации<input id="rag-results" type="number" min="1" max="20" value="3"></label>
-                  <label for="rag-threshold">Порог similarity<input id="rag-threshold" type="number" min="-1" max="1" step="0.05" value="0.35"></label>
+                  <label for="rag-threshold">Порог cosine для vector candidates<input id="rag-threshold" type="number" min="-1" max="1" step="0.05" value="0.35"></label>
                 </div>
                 <label><input id="rag-rewrite" type="checkbox" checked> Rewrite запроса (локальный heuristic)</label>
                 <label><input id="rag-rerank" type="checkbox" checked> Rerank оставшихся фрагментов</label>

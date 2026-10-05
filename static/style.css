@@ -258,3 +258,5 @@ summary { cursor: pointer; color: #395577; font-weight: 650; }
   .memory-layers { grid-template-columns: 1fr; }
   .mcp-grid { grid-template-columns: 1fr; }
 }
+[hidden] { display: none !important; }
+.task-memory-state { white-space: pre-wrap; line-height: 1.55; }

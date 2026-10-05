@@ -93,6 +93,26 @@ func TestCompleteWithSystemUsesProvidedInstruction(t *testing.T) {
 	}
 }
 
+func TestCompleteMessagesModelJSONRequestsJSONModeAndPreservesBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request completionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Model != "deepseek-flash" || request.ResponseFormat == nil || request.ResponseFormat.Type != "json_object" || request.MaxTokens != 2200 || len(request.Stop) != 0 {
+			t.Fatalf("structured completion controls = %#v", request)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"answer\":\"ok\",\"claims\":[]}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := newClient("test-key", server.Client(), server.URL)
+	completion, err := client.CompleteMessagesModelJSON(context.Background(), "deepseek-flash", []models.ChatMessage{{Role: "user", Content: "Return JSON"}}, models.GenerationSettings{MaxTokens: 2200})
+	if err != nil || completion.FinishReason != "stop" || completion.Answer != `{"answer":"ok","claims":[]}` {
+		t.Fatalf("structured completion = %#v, %v", completion, err)
+	}
+}
+
 func TestRequestControls(t *testing.T) {
 	_, format, stop, tokens := requestControls(models.ModeFormat, 512)
 	if format == nil || format.Type != "json_object" || len(stop) != 0 || tokens != 512 {
