@@ -352,6 +352,70 @@ func TestPersistentAgentRestoresHistoryAfterRestart(t *testing.T) {
 	}
 }
 
+func TestModelSwitchResetsOnlyOutputLimitAndManualLimitPersists(t *testing.T) {
+	store := NewJSONStore(filepath.Join(t.TempDir(), "state", "agent-settings.json"))
+	agent, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSettings := func(model string, maxTokens int, temperature float64) {
+		t.Helper()
+		state, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_model", Model: model})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Settings.MaxTokens != maxTokens {
+			t.Fatalf("model %q maxTokens=%d, want %d", model, state.Settings.MaxTokens, maxTokens)
+		}
+		if state.Settings.Temperature == nil || *state.Settings.Temperature != temperature {
+			t.Fatalf("model %q temperature=%v, want %v", model, state.Settings.Temperature, temperature)
+		}
+	}
+	initial, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_model", Model: models.DeepSeekFlashModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Settings.MaxTokens != 512 {
+		t.Fatalf("initial legacy maxTokens=%d, want 512", initial.Settings.MaxTokens)
+	}
+	temperature := 0.35
+	manual := models.GenerationSettings{Temperature: &temperature, MaxTokens: 3000}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_generation_settings", Settings: manual}); err != nil {
+		t.Fatal(err)
+	}
+	assertSettings(models.DeepSeekFlashModel, 3000, temperature) // same-model selection keeps manual value
+	localModel := "ollama/qwen3:4b"
+	assertSettings(localModel, 1024, temperature)
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_generation_settings", Settings: manual}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := NewPersistent(&fakeCompleter{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := current.ApplyContextCommand("session", models.ContextCommand{Action: "set_model", Model: localModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Settings.MaxTokens != 3000 {
+		t.Fatalf("same-model reload lost manual maxTokens: %d", state.Settings.MaxTokens)
+	}
+	agent = current
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_model", Model: models.DeepSeekProModel}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_model", Model: localModel}); err != nil {
+		t.Fatal(err)
+	}
+	state, err = agent.ApplyContextCommand("session", models.ContextCommand{Action: "set_model", Model: localModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Settings.MaxTokens != 1024 {
+		t.Fatalf("switching back to local maxTokens=%d, want 1024", state.Settings.MaxTokens)
+	}
+}
+
 type scriptedToolClient struct {
 	completions []models.ModelCompletion
 	requests    [][]models.ChatMessage
