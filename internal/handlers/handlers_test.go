@@ -30,6 +30,7 @@ type fakeClient struct {
 	modelCalls        []string
 	modelPrompt       string
 	messageRequests   [][]models.ChatMessage
+	messageSettings   []models.GenerationSettings
 	messageUsage      models.ModelUsage
 }
 
@@ -99,9 +100,50 @@ func TestAgentChatPersistsRecentMessagesThroughPatchGetAndRestart(t *testing.T) 
 	}
 }
 
-func (f *fakeClient) CompleteMessages(_ context.Context, messages []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
+func (f *fakeClient) CompleteMessages(_ context.Context, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
 	f.messageRequests = append(f.messageRequests, append([]models.ChatMessage(nil), messages...))
+	f.messageSettings = append(f.messageSettings, settings)
 	return models.ModelCompletion{Answer: f.answer, Usage: f.messageUsage}, f.err
+}
+
+func TestAgentChatAppliesAndPersistsGenerationSettings(t *testing.T) {
+	client := &fakeClient{answer: "Ответ"}
+	store := agent.NewJSONStore(filepath.Join(t.TempDir(), "agent-history.json"))
+	firstAgent, err := agent.NewPersistent(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(client)
+	handler.SetAgent(firstAgent)
+	cookie := &http.Cookie{Name: agentSessionCookie, Value: "generation-settings-session-long-enough"}
+	request := httptest.NewRequest(http.MethodPost, "/api/agent/chat", strings.NewReader(`{"message":"Привет","model":"deepseek-flash","settings":{"temperature":0.25,"maxTokens":128}}`))
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.AgentChat(recorder, request)
+	if recorder.Code != http.StatusOK || len(client.messageSettings) != 1 {
+		t.Fatalf("status=%d calls=%d: %s", recorder.Code, len(client.messageSettings), recorder.Body.String())
+	}
+	got := client.messageSettings[0]
+	if got.Temperature == nil || *got.Temperature != 0.25 || got.MaxTokens != 128 {
+		t.Fatalf("settings = %#v", got)
+	}
+	restarted, err := agent.NewPersistent(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedHandler := New(client)
+	restartedHandler.SetAgent(restarted)
+	get := httptest.NewRequest(http.MethodGet, "/api/agent/chat", nil)
+	get.AddCookie(cookie)
+	state := httptest.NewRecorder()
+	restartedHandler.AgentChat(state, get)
+	var payload models.AgentResponse
+	if err := json.NewDecoder(state.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Settings.Temperature == nil || *payload.Settings.Temperature != 0.25 || payload.Settings.MaxTokens != 128 {
+		t.Fatalf("persisted settings = %#v", payload.Settings)
+	}
 }
 
 func TestTokenDemoUsesSameFinalTaskAndCanForceCacheMiss(t *testing.T) {
@@ -140,6 +182,57 @@ func TestAgentModelsReturnsOnlyModelsSupportedByChat(t *testing.T) {
 	}
 	if got := strings.Join(response.Models, ","); got != "deepseek-flash,deepseek-v4-pro" {
 		t.Fatalf("models = %q", got)
+	}
+}
+
+type fakeLocalModelLister []string
+
+func (f fakeLocalModelLister) ListModels(context.Context) ([]string, error) { return []string(f), nil }
+
+func TestAgentModelsKeepsLocalModelsWhenDeepSeekCatalogFails(t *testing.T) {
+	client := &fakeClient{err: errors.New("DeepSeek is unavailable")}
+	handler := New(client)
+	handler.SetLocalModelLister(fakeLocalModelLister{"ollama/qwen3:4b"})
+	recorder := httptest.NewRecorder()
+	handler.AgentModels(recorder, httptest.NewRequest(http.MethodGet, "/api/agent/models", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response models.AgentModelsResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Models) != 1 || response.Models[0] != "ollama/qwen3:4b" {
+		t.Fatalf("models = %v", response.Models)
+	}
+}
+
+type localThinkingOnlyClient struct{ *fakeClient }
+
+func (f *localThinkingOnlyClient) CompleteMessagesModel(_ context.Context, _ string, _ []models.ChatMessage, _ models.GenerationSettings) (models.ModelCompletion, error) {
+	return models.ModelCompletion{Answer: "", FinishReason: "length", Usage: models.ModelUsage{InputTokens: 8, OutputTokens: 120, TotalTokens: 128}}, nil
+}
+
+func TestLocalThinkingOnlyTruncationShowsSafeNoAnswerMessage(t *testing.T) {
+	client := &localThinkingOnlyClient{fakeClient: &fakeClient{}}
+	handler := New(client)
+	handler.SetAgent(agent.New(client))
+	request := httptest.NewRequest(http.MethodPost, "/api/agent/chat", strings.NewReader(`{"message":"Вычисли ответ","model":"ollama/qwen3:4b","settings":{"maxTokens":32}}`))
+	request.AddCookie(&http.Cookie{Name: agentSessionCookie, Value: "local-thinking-test-session-long-enough"})
+	recorder := httptest.NewRecorder()
+	handler.AgentChat(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response models.AgentResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(response.Answer, "не выдала финальный ответ") || strings.Contains(response.Answer, "private reasoning") || strings.Contains(response.Answer, "внутренний ответ") {
+		t.Fatalf("unsafe or unclear answer: %q", response.Answer)
+	}
+	if response.FinishReason != "length" || response.Tokens.ResponseTokens != 120 {
+		t.Fatalf("finish/usage lost: reason=%q tokens=%#v", response.FinishReason, response.Tokens)
 	}
 }
 
