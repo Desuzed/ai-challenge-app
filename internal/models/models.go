@@ -1,9 +1,20 @@
 package models
 
+import "strings"
+
 type GenerationSettings struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"topP,omitempty"`
 	MaxTokens   int      `json:"maxTokens"`
+}
+
+// DefaultMaxTokens keeps the main chat's output budget practical per provider.
+// These are application defaults, not provider model limits.
+func DefaultMaxTokens(model string) int {
+	if strings.HasPrefix(model, "ollama/") {
+		return 1024
+	}
+	return 2048
 }
 
 const (
@@ -123,12 +134,13 @@ type ConversationCheckpoint struct {
 }
 
 type AgentRequest struct {
-	Message        string          `json:"message"`
-	RecentMessages int             `json:"recentMessages"`
-	Strategy       ContextStrategy `json:"strategy,omitempty"`
-	Model          string          `json:"model,omitempty"`
-	RAGEnabled     bool            `json:"ragEnabled,omitempty"`
-	RAGOptions     RAGOptions      `json:"ragOptions,omitempty"`
+	Message        string             `json:"message"`
+	RecentMessages int                `json:"recentMessages"`
+	Strategy       ContextStrategy    `json:"strategy,omitempty"`
+	Model          string             `json:"model,omitempty"`
+	RAGEnabled     bool               `json:"ragEnabled,omitempty"`
+	RAGOptions     RAGOptions         `json:"ragOptions,omitempty"`
+	Settings       GenerationSettings `json:"settings,omitempty"`
 }
 
 type TaskMemory struct {
@@ -196,23 +208,24 @@ type RAGTrace struct {
 // ContextCommand changes context mode or the active branch without asking the
 // model. It keeps branch operations explicit and easy to inspect in the UI.
 type ContextCommand struct {
-	Action         string          `json:"action"`
-	RecentMessages int             `json:"recentMessages,omitempty"`
-	Strategy       ContextStrategy `json:"strategy,omitempty"`
-	Name           string          `json:"name,omitempty"`
-	CheckpointID   string          `json:"checkpointId,omitempty"`
-	BranchID       string          `json:"branchId,omitempty"`
-	Layer          MemoryLayer     `json:"layer,omitempty"`
-	Category       string          `json:"category,omitempty"`
-	Key            string          `json:"key,omitempty"`
-	Value          string          `json:"value,omitempty"`
-	Model          string          `json:"model,omitempty"`
-	Profile        UserProfile     `json:"profile,omitempty"`
-	ProfileID      string          `json:"profileId,omitempty"`
-	Task           TaskState       `json:"task,omitempty"`
-	Phase          string          `json:"phase,omitempty"`
-	Invariant      Invariant       `json:"invariant,omitempty"`
-	PlannerMode    string          `json:"plannerMode,omitempty"`
+	Action         string             `json:"action"`
+	RecentMessages int                `json:"recentMessages,omitempty"`
+	Strategy       ContextStrategy    `json:"strategy,omitempty"`
+	Name           string             `json:"name,omitempty"`
+	CheckpointID   string             `json:"checkpointId,omitempty"`
+	BranchID       string             `json:"branchId,omitempty"`
+	Layer          MemoryLayer        `json:"layer,omitempty"`
+	Category       string             `json:"category,omitempty"`
+	Key            string             `json:"key,omitempty"`
+	Value          string             `json:"value,omitempty"`
+	Model          string             `json:"model,omitempty"`
+	Profile        UserProfile        `json:"profile,omitempty"`
+	ProfileID      string             `json:"profileId,omitempty"`
+	Task           TaskState          `json:"task,omitempty"`
+	Phase          string             `json:"phase,omitempty"`
+	Invariant      Invariant          `json:"invariant,omitempty"`
+	PlannerMode    string             `json:"plannerMode,omitempty"`
+	Settings       GenerationSettings `json:"settings,omitempty"`
 }
 
 // TaskStatus describes whether a task can currently progress. Pausing is
@@ -260,6 +273,7 @@ type TaskState struct {
 
 type AgentResponse struct {
 	Answer              string                   `json:"answer"`
+	FinishReason        string                   `json:"finishReason,omitempty"`
 	RAGEnabled          bool                     `json:"ragEnabled,omitempty"`
 	RAGSources          []RAGSource              `json:"ragSources"`
 	RAGTrace            *RAGTrace                `json:"ragTrace,omitempty"`
@@ -280,6 +294,7 @@ type AgentResponse struct {
 	Checkpoints         []ConversationCheckpoint `json:"checkpoints,omitempty"`
 	RecentMessages      int                      `json:"recentMessages"`
 	Model               string                   `json:"model"`
+	Settings            GenerationSettings       `json:"settings"`
 	Task                TaskState                `json:"task"`
 	TaskMemory          TaskMemory               `json:"taskMemory"`
 	PendingMessage      string                   `json:"pendingMessage,omitempty"`

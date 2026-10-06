@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -47,6 +48,10 @@ type modelVersionsCompleter interface {
 	CompleteModel(context.Context, string, string, string, models.GenerationSettings) (models.ModelCompletion, error)
 }
 
+type localModelLister interface {
+	ListModels(context.Context) ([]string, error)
+}
+
 type openRouterCompleter interface {
 	DiscoverWeakFreeModel(context.Context) (openrouter.Candidate, error)
 	Complete(context.Context, openrouter.Candidate, string, string) (models.ModelCompletion, error)
@@ -60,12 +65,14 @@ type Handler struct {
 	client              completer
 	reasoningClient     reasoningCompleter
 	modelVersionsClient modelVersionsCompleter
+	localModelLister    localModelLister
 	openRouterClient    openRouterCompleter
 	tokenDemoClient     tokenDemoCompleter
 	agent               *agent.Agent
 }
 
 func (h *Handler) SetOpenRouterClient(client openRouterCompleter) { h.openRouterClient = client }
+func (h *Handler) SetLocalModelLister(client localModelLister)    { h.localModelLister = client }
 func (h *Handler) SetAgent(value *agent.Agent)                    { h.agent = value }
 
 func New(client completer) *Handler {
@@ -414,7 +421,7 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
 	defer cancel()
-	result, err := h.agent.RespondWithUserOptionsRAGConfigured(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model, input.RAGEnabled, input.RAGOptions)
+	result, err := h.agent.RespondWithUserOptionsRAGConfiguredSettings(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model, input.RAGEnabled, input.RAGOptions, input.Settings)
 	if err != nil {
 		if errors.Is(err, rag.ErrIndexMissing) || errors.Is(err, rag.ErrIndexStale) || errors.Is(err, rag.ErrEmbeddingUnavailable) {
 			writeAgentError(w, http.StatusServiceUnavailable, err.Error())
@@ -458,24 +465,50 @@ func (h *Handler) AgentModels(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте GET-запрос.")
 		return
 	}
-	if h.modelVersionsClient == nil {
+	if h.modelVersionsClient == nil && h.localModelLister == nil {
 		writeAgentError(w, http.StatusServiceUnavailable, "Список моделей сейчас недоступен.")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	available, err := h.modelVersionsClient.ListModels(ctx)
-	if err != nil {
-		status, message := errorResponse(err)
+	result := make([]string, 0, 4)
+	var deepSeekErr error
+	var deepSeekModels, localModels []string
+	var deepSeekLoadErr, localLoadErr error
+	var wg sync.WaitGroup
+	if h.modelVersionsClient != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			deepSeekModels, deepSeekLoadErr = h.modelVersionsClient.ListModels(ctx)
+		}()
+	}
+	if h.localModelLister != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			localModels, localLoadErr = h.localModelLister.ListModels(ctx)
+		}()
+	}
+	wg.Wait()
+	deepSeekErr = deepSeekLoadErr
+	if deepSeekLoadErr == nil {
+		allowed := map[string]bool{models.DeepSeekFlashModel: true, models.DeepSeekProModel: true}
+		for _, name := range deepSeekModels {
+			if allowed[name] {
+				result = append(result, name)
+			}
+		}
+	}
+	if localLoadErr == nil {
+		result = append(result, localModels...)
+	}
+	if len(result) == 0 && deepSeekErr != nil && h.localModelLister == nil {
+		status, message := errorResponse(deepSeekErr)
 		writeAgentError(w, status, message)
 		return
-	}
-	allowed := map[string]bool{models.DeepSeekFlashModel: true, models.DeepSeekProModel: true}
-	result := make([]string, 0, len(available))
-	for _, name := range available {
-		if allowed[name] {
-			result = append(result, name)
-		}
 	}
 	sort.Strings(result)
 	writeJSON(w, http.StatusOK, models.AgentModelsResponse{Models: result})

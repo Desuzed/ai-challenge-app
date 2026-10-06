@@ -98,6 +98,9 @@ type conversation struct {
 	plannerMode                     string
 	strategy                        models.ContextStrategy
 	model                           string
+	generationSettings              models.GenerationSettings
+	hasGenerationSettings           bool
+	lastFinishReason                string
 	recentMessages                  int
 	messages                        []models.ChatMessage
 	facts                           map[string]string
@@ -176,6 +179,9 @@ func newAgent(client completer, store Store, restored PersistentState) *Agent {
 		c := newConversation()
 		c.strategy = normalizeStrategy(state.Strategy)
 		c.model = normalizeModel(state.Model)
+		c.generationSettings = state.GenerationSettings
+		c.hasGenerationSettings = state.HasGenerationSettings
+		c.lastFinishReason = state.LastFinishReason
 		if state.RecentMessages >= minRecentMessages && state.RecentMessages <= maxRecentMessages {
 			c.recentMessages = state.RecentMessages
 		}
@@ -257,16 +263,20 @@ func (a *Agent) RespondWithUserOptions(ctx context.Context, userID, sessionID, i
 }
 
 func (a *Agent) RespondWithUserOptionsRAG(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool) (models.AgentResponse, error) {
-	return a.respondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, ragEnabled, models.RAGOptions{})
+	return a.respondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, ragEnabled, models.RAGOptions{}, models.GenerationSettings{})
 }
 
 // RespondWithUserOptionsRAGConfigured keeps the legacy API stable while the
 // HTTP/UI flow can choose the visible retrieval and filtering parameters.
 func (a *Agent) RespondWithUserOptionsRAGConfigured(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool, ragOptions models.RAGOptions) (models.AgentResponse, error) {
-	return a.respondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, ragEnabled, ragOptions)
+	return a.respondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, ragEnabled, ragOptions, models.GenerationSettings{})
 }
 
-func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool, ragOptions models.RAGOptions) (models.AgentResponse, error) {
+func (a *Agent) RespondWithUserOptionsRAGConfiguredSettings(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool, ragOptions models.RAGOptions, settings models.GenerationSettings) (models.AgentResponse, error) {
+	return a.respondWithUserOptionsRAG(ctx, userID, sessionID, input, recent, strategy, model, ragEnabled, ragOptions, settings)
+}
+
+func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID, input string, recent int, strategy models.ContextStrategy, model string, ragEnabled bool, ragOptions models.RAGOptions, selectedSettings models.GenerationSettings) (models.AgentResponse, error) {
 	message := strings.TrimSpace(input)
 	if message == "" {
 		return models.AgentResponse{}, ErrEmptyMessage
@@ -285,6 +295,16 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	}
 	if err := a.configureLocked(c, recent, strategy, model); err != nil {
 		return models.AgentResponse{}, err
+	}
+	if selectedSettings.MaxTokens != 0 {
+		if err := validateGenerationSettings(selectedSettings); err != nil {
+			return models.AgentResponse{}, err
+		}
+		if selectedSettings.Temperature != nil && selectedSettings.TopP != nil {
+			return models.AgentResponse{}, errors.New("Выберите temperature или top_p, не отправляйте оба параметра одновременно.")
+		}
+		c.generationSettings = selectedSettings
+		c.hasGenerationSettings = true
 	}
 	previousMemory := copyTaskMemory(c.taskMemory)
 	turn := userTurnCount(c.activeMessagesLocked()) + 1
@@ -452,7 +472,11 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	if skipGroundedCall {
 		completion.Answer = `{"answer":"","claims":[]}`
 	} else {
-		completion, completionErr = a.completeLocked(workCtx, c.model, request, plannerTurn, toolTurn, message, false, ragEnabled)
+		var customSettings *models.GenerationSettings
+		if c.hasGenerationSettings {
+			customSettings = &c.generationSettings
+		}
+		completion, completionErr = a.completeLocked(workCtx, c.model, request, plannerTurn, toolTurn, message, false, customSettings, ragEnabled)
 	}
 	pauseRequested := c.finishWork()
 	if pauseRequested {
@@ -466,6 +490,11 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		return models.AgentResponse{}, completionErr
 	}
 	answer := completion.Answer
+	c.lastFinishReason = completion.FinishReason
+	noFinalAnswer := strings.HasPrefix(c.model, "ollama/") && strings.TrimSpace(completion.Answer) == "" && len(completion.ToolCalls) == 0
+	if noFinalAnswer {
+		answer = "Локальная модель не выдала финальный ответ. Лимит токенов мог уйти на внутреннюю обработку; увеличьте max_tokens и отправьте запрос ещё раз."
+	}
 	var groundedSources []models.RAGSource
 	var toolSources []models.RAGSource
 	ragAbstained := false
@@ -478,7 +507,7 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	if ragEnabled && toolTurn && len(completion.ToolExecutions) > 0 {
 		toolSources = sourcesForToolExecutions(completion.ToolExecutions)
 	}
-	if ragEnabled {
+	if ragEnabled && !noFinalAnswer {
 		trustedToolSuccess := toolTurn && completion.FinishReason == "tool_success" && len(toolSources) > 0
 		if trustedToolSuccess {
 			// These acknowledgements are assembled by completeWithToolsLocked
@@ -553,19 +582,24 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		}
 	}
 	if plannerTurn {
-		if !ragEnabled {
+		if noFinalAnswer {
+			c.task = taskAfterUserLifecycle
+		} else if !ragEnabled {
 			var plannerAnswer string
 			plannerAnswer, c.task = applyPlannerCompletion(c.task, completion.Answer, message)
 			answer = plannerAnswer
 		}
 	}
-	if shouldStageGitHubReport(message, completion.ToolExecutions, answer) {
+	if !noFinalAnswer && shouldStageGitHubReport(message, completion.ToolExecutions, answer) {
 		date := time.Now().In(moscowLocation()).Format("2006-01-02")
 		c.pendingGitHubReport = &pendingGitHubReport{
 			Path:    "reports/briefing-" + date + ".md",
 			Content: briefingContentForGitHub(answer),
 			Message: "docs: add city briefing " + date,
 		}
+	}
+	if completion.FinishReason == "length" && !noFinalAnswer {
+		answer += "\n\n⚠️ Ответ завершён по лимиту токенов и может быть неполным. Увеличьте лимит и повторите запрос."
 	}
 	for _, execution := range completion.ToolExecutions {
 		c.setActiveMessagesLocked(append(c.activeMessagesLocked(), models.ChatMessage{Role: "assistant", Content: formatToolExecutionForChat(execution)}))
@@ -611,6 +645,16 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		}
 	}
 	return response, nil
+}
+
+func validateGenerationSettings(settings models.GenerationSettings) error {
+	if settings.MaxTokens < 1 || settings.MaxTokens > 8192 || settings.Temperature != nil && (*settings.Temperature < 0 || *settings.Temperature > 2) || settings.TopP != nil && (*settings.TopP <= 0 || *settings.TopP > 1) {
+		return errors.New("Параметры генерации: max tokens 1–8192, temperature 0–2, top_p больше 0 и не больше 1.")
+	}
+	if settings.Temperature != nil && settings.TopP != nil {
+		return errors.New("Выберите temperature или top_p, не отправляйте оба параметра одновременно.")
+	}
+	return nil
 }
 
 type groundedEvidence struct {
@@ -1199,10 +1243,18 @@ func (a *Agent) finishNewsDigest(sessionID, userID string, schedule newsDigestSc
 	finishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	messages := []models.ChatMessage{{Role: "system", Content: "Ты редактор новостной сводки. Не добавляй фактов вне источников."}, {Role: "user", Content: prompt}}
+	model := models.DeepSeekFlashModel
+	if conversation := a.conversationForUser(sessionID, userID); conversation != nil {
+		conversation.mu.Lock()
+		if conversation.model != "" {
+			model = conversation.model
+		}
+		conversation.mu.Unlock()
+	}
 	var completion models.ModelCompletion
 	var err error
 	if client, ok := a.client.(modelCompleter); ok {
-		completion, err = client.CompleteMessagesModel(finishCtx, models.DeepSeekFlashModel, messages, models.GenerationSettings{MaxTokens: 2400})
+		completion, err = client.CompleteMessagesModel(finishCtx, model, messages, models.GenerationSettings{MaxTokens: 2400})
 	} else {
 		completion, err = a.client.CompleteMessages(finishCtx, messages, models.GenerationSettings{MaxTokens: 2400})
 	}
@@ -1330,15 +1382,28 @@ func (a *Agent) respondWhileTaskPausedLocked(c *conversation, u *userState, mess
 	return response, nil
 }
 
-func (a *Agent) completeLocked(ctx context.Context, model string, request []models.ChatMessage, planner, toolTurn bool, latestUserMessage string, weatherClearConfirmed bool, grounded ...bool) (models.ModelCompletion, error) {
+func (a *Agent) completeLocked(ctx context.Context, model string, request []models.ChatMessage, planner, toolTurn bool, latestUserMessage string, weatherClearConfirmed bool, selectedSettings *models.GenerationSettings, grounded ...bool) (models.ModelCompletion, error) {
 	settings := a.settings
+	customSettings := selectedSettings != nil
+	if customSettings {
+		settings = *selectedSettings
+	}
 	if planner {
-		settings.MaxTokens = plannerMaxTokens
+		if customSettings {
+			settings.MaxTokens = min(settings.MaxTokens, plannerMaxTokens)
+		} else {
+			settings.MaxTokens = plannerMaxTokens
+		}
 	} else if len(grounded) > 0 && grounded[0] {
-		settings.MaxTokens = groundedOutputBudget(latestUserMessage)
+		budget := groundedOutputBudget(latestUserMessage)
+		if customSettings {
+			settings.MaxTokens = min(settings.MaxTokens, budget)
+		} else {
+			settings.MaxTokens = budget
+		}
 	}
 	if toolTurn {
-		return a.completeWithToolsLocked(ctx, model, request, settings, latestUserMessage, weatherClearConfirmed)
+		return a.completeWithToolsLocked(ctx, model, request, settings, latestUserMessage, weatherClearConfirmed, customSettings)
 	}
 	if len(grounded) > 0 && grounded[0] {
 		if client, ok := a.client.(structuredMessageCompleter); ok {
@@ -1355,12 +1420,12 @@ func (a *Agent) completeLocked(ctx context.Context, model string, request []mode
 	return client.CompleteMessagesModel(ctx, model, request, settings)
 }
 
-func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, request []models.ChatMessage, settings models.GenerationSettings, latestUserMessage string, weatherClearConfirmed bool) (models.ModelCompletion, error) {
+func (a *Agent) completeWithToolsLocked(ctx context.Context, model string, request []models.ChatMessage, settings models.GenerationSettings, latestUserMessage string, weatherClearConfirmed bool, customSettings bool) (models.ModelCompletion, error) {
 	client, ok := a.client.(toolCompleter)
 	if !ok || a.tools == nil {
 		return models.ModelCompletion{}, errors.New("Выбранный клиент не поддерживает MCP tool calling.")
 	}
-	if briefingIntent(latestUserMessage) && settings.MaxTokens < briefingMaxTokens {
+	if briefingIntent(latestUserMessage) && settings.MaxTokens < briefingMaxTokens && !customSettings {
 		settings.MaxTokens = briefingMaxTokens
 	}
 	tools, err := a.tools.ToolsForModel(ctx)
@@ -1879,7 +1944,16 @@ func (a *Agent) configureLocked(c *conversation, recent int, strategy models.Con
 		if !validModel(model) {
 			return errors.New("Выберите модель из доступного списка.")
 		}
-		c.model = model
+		if c.model != model {
+			c.model = model
+			settings := a.settings
+			if c.hasGenerationSettings {
+				settings = c.generationSettings
+			}
+			settings.MaxTokens = models.DefaultMaxTokens(model)
+			c.generationSettings = settings
+			c.hasGenerationSettings = true
+		}
 	}
 	return nil
 }
@@ -1893,7 +1967,22 @@ func normalizeStrategy(s models.ContextStrategy) models.ContextStrategy {
 	return models.StrategySlidingWindow
 }
 func validModel(model string) bool {
-	return model == models.DeepSeekFlashModel || model == models.DeepSeekProModel
+	if model == models.DeepSeekFlashModel || model == models.DeepSeekProModel {
+		return true
+	}
+	if !strings.HasPrefix(model, "ollama/") || len(model) > 120 {
+		return false
+	}
+	name := strings.TrimPrefix(model, "ollama/")
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:/", r)) {
+			return false
+		}
+	}
+	return true
 }
 func normalizeModel(model string) string {
 	if validModel(model) {
@@ -1962,15 +2051,32 @@ func (a *Agent) responseLocked(c *conversation, u *userState, answer string, req
 		shortTerm = shortTerm[len(shortTerm)-c.recentMessages:]
 	}
 	profile := u.profiles[c.activeProfileID]
-	return models.AgentResponse{Answer: answer, RAGSources: []models.RAGSource{}, Messages: copyMessages(c.activeMessagesLocked()), RequestMessages: copyMessages(request), Tokens: report, Strategy: c.strategy, Facts: factsSlice(c.facts), Memory: models.MemoryLayers{ShortTerm: copyMessages(shortTerm), Working: memoryItems(models.MemoryWorking, "", c.workingMemory), LongTerm: longTermItems(u.longTermMemory)}, Profile: profile, Profiles: profilesSlice(u.profiles), ActiveProfileID: c.activeProfileID, ActiveBranchID: c.activeBranchID, Branches: branchesSlice(c), Checkpoints: checkpointsSlice(c), RecentMessages: c.recentMessages, Model: c.model, Task: copyTaskState(c.task), TaskMemory: copyTaskMemory(c.taskMemory), PendingMessage: c.pendingMessage, GlobalInvariants: copyInvariants(u.globalInvariants), PlannerMode: c.plannerMode}
+	settings := a.settings
+	if c.hasGenerationSettings {
+		settings = c.generationSettings
+	}
+	return models.AgentResponse{Answer: answer, FinishReason: c.lastFinishReason, RAGSources: []models.RAGSource{}, Messages: copyMessages(c.activeMessagesLocked()), RequestMessages: copyMessages(request), Tokens: report, Strategy: c.strategy, Facts: factsSlice(c.facts), Memory: models.MemoryLayers{ShortTerm: copyMessages(shortTerm), Working: memoryItems(models.MemoryWorking, "", c.workingMemory), LongTerm: longTermItems(u.longTermMemory)}, Profile: profile, Profiles: profilesSlice(u.profiles), ActiveProfileID: c.activeProfileID, ActiveBranchID: c.activeBranchID, Branches: branchesSlice(c), Checkpoints: checkpointsSlice(c), RecentMessages: c.recentMessages, Model: c.model, Settings: settings, Task: copyTaskState(c.task), TaskMemory: copyTaskMemory(c.taskMemory), PendingMessage: c.pendingMessage, GlobalInvariants: copyInvariants(u.globalInvariants), PlannerMode: c.plannerMode}
 }
 func (a *Agent) tokenReportLocked(c *conversation, request []models.ChatMessage, current string, usage models.ModelUsage) models.AgentTokenReport {
 	history := c.activeMessagesLocked()
 	reservedOutput := a.settings.MaxTokens
-	if plannerEnabled(c) {
-		reservedOutput = plannerMaxTokens
+	if c.hasGenerationSettings {
+		reservedOutput = c.generationSettings.MaxTokens
 	}
-	report := models.AgentTokenReport{HistoryTokens: estimateDialogueHistoryTokens(history), CurrentMessageTokens: estimateMessageTokens(models.ChatMessage{Role: "user", Content: current}), EstimatedRequestTokens: estimateMessagesTokens(request), RequestTokens: usage.InputTokens, ResponseTokens: usage.OutputTokens, ContextLimitTokens: contextLimitTokens, ReservedOutputTokens: reservedOutput, EstimateNote: estimateNote, CacheHitTokens: usage.CacheHitTokens, CacheMissTokens: usage.CacheMissTokens}
+	if plannerEnabled(c) {
+		if c.hasGenerationSettings {
+			reservedOutput = min(reservedOutput, plannerMaxTokens)
+		} else {
+			reservedOutput = plannerMaxTokens
+		}
+	}
+	limit := contextLimitTokens
+	note := estimateNote
+	if strings.HasPrefix(c.model, "ollama/") {
+		limit = 8192
+		note = "Локальная модель Ollama: входные и выходные токены указаны по usage API. Стоимость облачного API — 0; до ответа размер запроса оценивается по символам."
+	}
+	report := models.AgentTokenReport{HistoryTokens: estimateDialogueHistoryTokens(history), CurrentMessageTokens: estimateMessageTokens(models.ChatMessage{Role: "user", Content: current}), EstimatedRequestTokens: estimateMessagesTokens(request), RequestTokens: usage.InputTokens, ResponseTokens: usage.OutputTokens, ContextLimitTokens: limit, ReservedOutputTokens: reservedOutput, EstimateNote: note, CacheHitTokens: usage.CacheHitTokens, CacheMissTokens: usage.CacheMissTokens}
 	if current == "" {
 		report.CurrentMessageTokens = 0
 	}
@@ -1978,16 +2084,20 @@ func (a *Agent) tokenReportLocked(c *conversation, request []models.ChatMessage,
 		report.HistoryTokens += estimateMessagesTokens([]models.ChatMessage{{Role: "system", Content: formatFacts(c.facts)}})
 	}
 	report.FullHistoryEstimate = report.HistoryTokens
-	report.RemainingContextTokens = contextLimitTokens - report.EstimatedRequestTokens - report.ReservedOutputTokens
+	report.RemainingContextTokens = limit - report.EstimatedRequestTokens - report.ReservedOutputTokens
 	if report.RemainingContextTokens < 0 {
 		report.RemainingContextTokens = 0
 	}
 	for _, item := range c.activeUsagesLocked() {
 		report.CumulativeInputTokens += item.InputTokens
 		report.CumulativeOutputTokens += item.OutputTokens
-		report.CumulativeCostUSD += usageCost(item)
+		if !strings.HasPrefix(c.model, "ollama/") {
+			report.CumulativeCostUSD += usageCost(item)
+		}
 	}
-	report.EstimatedCostUSD = usageCost(usage)
+	if !strings.HasPrefix(c.model, "ollama/") {
+		report.EstimatedCostUSD = usageCost(usage)
+	}
 	return report
 }
 
@@ -2023,6 +2133,11 @@ func (a *Agent) ApplyContextCommandForUser(userID, sessionID string, command mod
 		err = a.configureLocked(c, 0, command.Strategy, "")
 	case "set_model":
 		err = a.configureLocked(c, 0, "", command.Model)
+	case "set_generation_settings":
+		if err = validateGenerationSettings(command.Settings); err == nil {
+			c.generationSettings = command.Settings
+			c.hasGenerationSettings = true
+		}
 	case "set_profile":
 		err = a.createProfileLocked(c, u, command.Profile)
 	case "create_profile":
@@ -2959,7 +3074,7 @@ func (a *Agent) save() error {
 	defer a.mu.Unlock()
 	state := PersistentState{Sessions: make(map[string]ConversationState, len(a.sessions)), Users: make(map[string]UserState, len(a.users))}
 	for id, c := range a.sessions {
-		saved := ConversationState{Strategy: c.strategy, Model: c.model, UserID: c.userID, ActiveProfileID: c.activeProfileID, RecentMessages: c.recentMessages, Messages: copyMessages(c.messages), Facts: copyFactsMap(c.facts), WorkingMemory: copyFactsMap(c.workingMemory), Usages: append([]models.ModelUsage(nil), c.usages...), ActiveBranchID: c.activeBranchID, NextBranch: c.nextBranch, NextCheckpoint: c.nextCheckpoint, NextMemoryItem: c.nextMemoryItem, Task: copyTaskState(c.task), TaskMemory: copyTaskMemory(c.taskMemory), PendingMessage: c.pendingMessage, PlannerMode: c.plannerMode}
+		saved := ConversationState{Strategy: c.strategy, Model: c.model, GenerationSettings: c.generationSettings, HasGenerationSettings: c.hasGenerationSettings, LastFinishReason: c.lastFinishReason, UserID: c.userID, ActiveProfileID: c.activeProfileID, RecentMessages: c.recentMessages, Messages: copyMessages(c.messages), Facts: copyFactsMap(c.facts), WorkingMemory: copyFactsMap(c.workingMemory), Usages: append([]models.ModelUsage(nil), c.usages...), ActiveBranchID: c.activeBranchID, NextBranch: c.nextBranch, NextCheckpoint: c.nextCheckpoint, NextMemoryItem: c.nextMemoryItem, Task: copyTaskState(c.task), TaskMemory: copyTaskMemory(c.taskMemory), PendingMessage: c.pendingMessage, PlannerMode: c.plannerMode}
 		if c.legacyMiniChatArchive != nil {
 			saved.MiniChat = copyLegacyMiniChat(*c.legacyMiniChatArchive)
 		}

@@ -33,24 +33,27 @@ type UserState struct {
 // ConversationState is stored per browser session. Facts, checkpoints and
 // branches remain structured state; no generated summary is persisted.
 type ConversationState struct {
-	Strategy        models.ContextStrategy `json:"strategy,omitempty"`
-	Messages        []models.ChatMessage   `json:"messages"`
-	Facts           map[string]string      `json:"facts,omitempty"`
-	Usages          []models.ModelUsage    `json:"usages,omitempty"`
-	RecentMessages  int                    `json:"recentMessages,omitempty"`
-	Branches        []BranchState          `json:"branches,omitempty"`
-	ActiveBranchID  string                 `json:"activeBranchId,omitempty"`
-	Checkpoints     []CheckpointState      `json:"checkpoints,omitempty"`
-	NextBranch      int                    `json:"nextBranch,omitempty"`
-	NextCheckpoint  int                    `json:"nextCheckpoint,omitempty"`
-	NextMemoryItem  int                    `json:"nextMemoryItem,omitempty"`
-	Model           string                 `json:"model,omitempty"`
-	UserID          string                 `json:"userId,omitempty"`
-	ActiveProfileID string                 `json:"activeProfileId,omitempty"`
-	Task            models.TaskState       `json:"task"`
-	TaskMemory      models.TaskMemory      `json:"taskMemory,omitempty"`
-	PendingMessage  string                 `json:"pendingMessage,omitempty"`
-	PlannerMode     string                 `json:"plannerMode,omitempty"`
+	Strategy              models.ContextStrategy    `json:"strategy,omitempty"`
+	Messages              []models.ChatMessage      `json:"messages"`
+	Facts                 map[string]string         `json:"facts,omitempty"`
+	Usages                []models.ModelUsage       `json:"usages,omitempty"`
+	RecentMessages        int                       `json:"recentMessages,omitempty"`
+	Branches              []BranchState             `json:"branches,omitempty"`
+	ActiveBranchID        string                    `json:"activeBranchId,omitempty"`
+	Checkpoints           []CheckpointState         `json:"checkpoints,omitempty"`
+	NextBranch            int                       `json:"nextBranch,omitempty"`
+	NextCheckpoint        int                       `json:"nextCheckpoint,omitempty"`
+	NextMemoryItem        int                       `json:"nextMemoryItem,omitempty"`
+	Model                 string                    `json:"model,omitempty"`
+	GenerationSettings    models.GenerationSettings `json:"generationSettings,omitempty"`
+	HasGenerationSettings bool                      `json:"hasGenerationSettings,omitempty"`
+	LastFinishReason      string                    `json:"lastFinishReason,omitempty"`
+	UserID                string                    `json:"userId,omitempty"`
+	ActiveProfileID       string                    `json:"activeProfileId,omitempty"`
+	Task                  models.TaskState          `json:"task"`
+	TaskMemory            models.TaskMemory         `json:"taskMemory,omitempty"`
+	PendingMessage        string                    `json:"pendingMessage,omitempty"`
+	PlannerMode           string                    `json:"plannerMode,omitempty"`
 	// Profile and LongTermMemory are retained only to migrate the previous
 	// single-profile, per-session format when it is read.
 	Profile models.UserProfile `json:"profile,omitempty"`
@@ -61,7 +64,7 @@ type ConversationState struct {
 	LongTermMemory map[string]map[string]string `json:"longTermMemory,omitempty"`
 	// MiniChat retains data written by the former isolated mode for migration.
 	// It is never used as a live second conversation.
-	MiniChat       MiniChatState                `json:"miniChat,omitempty"`
+	MiniChat MiniChatState `json:"miniChat,omitempty"`
 }
 
 // MiniChatState is isolated from the legacy planner, context strategies,
