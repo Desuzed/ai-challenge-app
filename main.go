@@ -16,8 +16,10 @@ import (
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/githubmcp"
 	"ai-challenge-app/internal/handlers"
+	"ai-challenge-app/internal/llmrouter"
 	"ai-challenge-app/internal/mcpbridge"
 	"ai-challenge-app/internal/newsmcp"
+	"ai-challenge-app/internal/ollama"
 	"ai-challenge-app/internal/openrouter"
 	"ai-challenge-app/internal/rag"
 	"ai-challenge-app/internal/ragindex"
@@ -44,19 +46,22 @@ func main() {
 		log.Print("warning: local API key file could not be read; API key may be unavailable")
 	}
 
-	client := deepseek.NewClient(apiKey, deepSeekRequestTimeout)
+	deepSeekClient := deepseek.NewClient(apiKey, deepSeekRequestTimeout)
+	ollamaURL := localSetting("OLLAMA_URL", os.Getenv, os.ReadFile)
+	if ollamaURL == "" {
+		ollamaURL = "http://127.0.0.1:11434"
+	}
+	localClient := ollama.New(ollamaURL, 5*time.Minute)
+	client := &llmrouter.Client{DeepSeek: deepSeekClient, Ollama: localClient}
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
 	handler := handlers.New(client)
+	handler.SetLocalModelLister(localClient)
 	persistentAgent, err := agent.NewPersistent(client, agent.NewJSONStore(agentHistoryFile))
 	if err != nil {
 		log.Fatalf("load agent history: %v", err)
 	}
 	handler.SetAgent(persistentAgent)
-	ollamaURL := localSetting("OLLAMA_URL", os.Getenv, os.ReadFile)
-	if ollamaURL == "" {
-		ollamaURL = "http://127.0.0.1:11434"
-	}
 	persistentAgent.SetRetriever(&rag.Searcher{Root: ".", IndexDir: ".local/rag", Model: "embeddinggemma", Embedder: ragindex.Ollama{URL: ollamaURL, Model: "embeddinggemma"}})
 	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
 	homeDirectory, err := os.UserHomeDir()
