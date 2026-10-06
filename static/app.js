@@ -11,6 +11,9 @@ const agentSubmit = document.querySelector('#agent-submit');
 const agentHistory = document.querySelector('#agent-history');
 const clearAgentHistory = document.querySelector('#clear-agent-history');
 const openContextSettings = document.querySelector('#open-context-settings');
+const openModelPicker = document.querySelector('#open-model-picker');
+const modelPickerDialog = document.querySelector('#model-picker-dialog');
+const closeModelPicker = document.querySelector('#close-model-picker');
 const contextSettingsDialog = document.querySelector('#context-settings-dialog');
 const closeContextSettings = document.querySelector('#close-context-settings');
 const doneContextSettings = document.querySelector('#done-context-settings');
@@ -30,6 +33,9 @@ const requestLog = document.querySelector('#request-log');
 const tokenReport = document.querySelector('#token-report');
 const agentModel = document.querySelector('#agent-model');
 const modelDescription = document.querySelector('#model-description');
+const generationTemperature = document.querySelector('#generation-temperature');
+const generationTopP = document.querySelector('#generation-top-p');
+const generationMaxTokens = document.querySelector('#generation-max-tokens');
 const memoryLayers = document.querySelector('#memory-layers');
 const clearLongTermMemory = document.querySelector('#clear-long-term-memory');
 const profileForm = document.querySelector('#profile-form');
@@ -64,6 +70,14 @@ const mcpTokenNote = document.querySelector('#mcp-token-note');
 const mcpResult = document.querySelector('#mcp-result');
 
 let selectedAgentModel = 'deepseek-flash';
+let modelCatalogReady = false;
+let generationSettingsDirty = false;
+let generationSettingsRevision = 0;
+let modelSelectionRevision = 0;
+let generationSettingsSaveTimer = null;
+let generationSettingsSavePromise = null;
+[generationTemperature, generationTopP, generationMaxTokens].forEach((input) => input.addEventListener('input', () => { generationSettingsDirty = true; generationSettingsRevision++; }));
+[generationTemperature, generationTopP, generationMaxTokens].forEach((input) => input.addEventListener('change', queueGenerationSettingsSave));
 ragEnabled.checked = localStorage.getItem('ragEnabled') === 'true';
 ragEnabledChat.checked = ragEnabled.checked;
 function syncRAGToggle(event) {
@@ -91,8 +105,19 @@ const strategyDescriptions = {
 
 openContextSettings.addEventListener('click', () => contextSettingsDialog.showModal());
 contextSettingsDialog.addEventListener('close', () => openContextSettings.focus());
-closeContextSettings.addEventListener('click', () => contextSettingsDialog.close());
-doneContextSettings.addEventListener('click', () => contextSettingsDialog.close());
+async function closeContextSettingsAfterSave() {
+  if (!await saveGenerationSettings()) return;
+  contextSettingsDialog.close();
+}
+closeContextSettings.addEventListener('click', closeContextSettingsAfterSave);
+doneContextSettings.addEventListener('click', closeContextSettingsAfterSave);
+contextSettingsDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  closeContextSettingsAfterSave();
+});
+openModelPicker.addEventListener('click', () => modelPickerDialog.showModal());
+closeModelPicker.addEventListener('click', () => modelPickerDialog.close());
+modelPickerDialog.addEventListener('close', () => openModelPicker.focus());
 
 function prettyJSON(value) { return JSON.stringify(value, null, 2); }
 function readableFetchError(error, fallback) {
@@ -106,8 +131,10 @@ function setStatus(text, isError = false) {
 function modelLabel(model) {
   if (model === 'deepseek-flash') return 'DeepSeek Flash';
   if (model === 'deepseek-v4-pro') return 'DeepSeek V4 Pro';
-  return model;
+  return model.startsWith('ollama/') ? model.slice('ollama/'.length) : model;
 }
+function modelProvider(model) { return model.startsWith('ollama/') ? 'Локальные' : 'DeepSeek'; }
+function updateModelPickerLabel() { openModelPicker.textContent = `Модель: ${modelProvider(selectedAgentModel)} · ${modelLabel(selectedAgentModel)}`; }
 
 async function readJSONResponse(response, operation) {
   const body = await response.text();
@@ -344,12 +371,19 @@ function renderInvariants(payload) {
   });
 }
 
-function renderContextState(payload, { preserveRecentMessages = false } = {}) {
+function renderContextState(payload, { preserveRecentMessages = false, preserveModelSelection = false, preserveGenerationSettings = false, forceGenerationSettings = false } = {}) {
   if (payload.strategy && strategyDescriptions[payload.strategy]) contextStrategy.value = payload.strategy;
   if (payload.recentMessages && !preserveRecentMessages) recentMessages.value = payload.recentMessages;
-  if (payload.model) {
-    selectedAgentModel = payload.model;
-    agentModel.value = selectedAgentModel;
+  if (payload.model && !preserveModelSelection) {
+    const available = [...agentModel.options].some((option) => option.value === payload.model);
+    if (!modelCatalogReady || available) selectedAgentModel = payload.model;
+    if ([...agentModel.options].some((option) => option.value === selectedAgentModel)) agentModel.value = selectedAgentModel;
+    updateModelPickerLabel();
+  }
+  if (payload.settings && !preserveGenerationSettings && (!generationSettingsDirty || forceGenerationSettings)) {
+    generationTemperature.value = payload.settings.temperature ?? '';
+    generationTopP.value = payload.settings.topP ?? '';
+    if (payload.settings.maxTokens) generationMaxTokens.value = payload.settings.maxTokens;
   }
   strategyDescription.textContent = strategyDescriptions[contextStrategy.value];
   window.currentPlannerMode = payload.plannerMode || 'disabled';
@@ -374,10 +408,11 @@ function renderTokenReport(payload) {
   const tokens = payload.tokens;
   if (!tokens || (tokens.requestTokens === 0 && tokens.responseTokens === 0)) return;
   tokenReport.textContent = [
-    `Модель: ${modelLabel(payload.model || selectedAgentModel)}`,
+    `Провайдер: ${modelProvider(payload.model || selectedAgentModel)} · модель: ${modelLabel(payload.model || selectedAgentModel)}`,
     `Вход: ${tokens.requestTokens} токенов`,
     `Выход: ${tokens.responseTokens} токенов`,
     `Всего: ${tokens.requestTokens + tokens.responseTokens} токенов`,
+    `Оценочная стоимость: ${tokens.estimatedCostUSD || 0} USD`,
   ].join(' · ');
 }
 
@@ -391,6 +426,7 @@ async function readAgentResponse(response) {
 async function patchAgent(command, fallback) {
   const recentEditRevision = recentMessagesEditRevision;
   const recentStateRevision = recentMessagesStateRevision;
+  const settingsRevision = generationSettingsRevision;
   const response = await fetch('/api/agent/chat', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(command) });
   const payload = await readAgentResponse(response);
   if (!response.ok) throw new Error(payload.error || fallback);
@@ -400,10 +436,59 @@ async function patchAgent(command, fallback) {
     return payload;
   }
   const preserveRecent = recentMessagesDirty || recentEditRevision !== recentMessagesEditRevision || recentStateRevision !== recentMessagesStateRevision;
-  renderContextState(payload, { preserveRecentMessages: preserveRecent });
+  const refreshGenerationSettings = command.action === 'set_model' || command.action === 'set_generation_settings';
+  const preserveGenerationEdits = generationSettingsDirty && settingsRevision !== generationSettingsRevision;
+  if (refreshGenerationSettings && !preserveGenerationEdits) generationSettingsDirty = false;
+  renderContextState(payload, { preserveRecentMessages: preserveRecent, forceGenerationSettings: refreshGenerationSettings && !preserveGenerationEdits });
   renderAgentHistory(payload.messages);
   requestLog.textContent = `БРАУЗЕР → BACKEND\nPATCH /api/agent/chat\n${prettyJSON(command)}`;
   return payload;
+}
+
+function readGenerationSettings() {
+  const maxTokens = Number(generationMaxTokens.value);
+  const topP = generationTopP.value === '' ? null : Number(generationTopP.value);
+  const temperature = generationTemperature.value === '' ? null : Number(generationTemperature.value);
+  if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192 || topP !== null && (!Number.isFinite(topP) || topP <= 0 || topP > 1) || topP === null && (temperature === null || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+    throw new Error('Проверьте параметры генерации: temperature 0–2 или top_p больше 0 и не больше 1; лимит ответа 1–8192.');
+  }
+  const settings = { maxTokens };
+  if (topP !== null) settings.topP = topP;
+  else settings.temperature = temperature;
+  return settings;
+}
+
+async function saveGenerationSettings() {
+  clearTimeout(generationSettingsSaveTimer);
+  generationSettingsSaveTimer = null;
+  if (generationSettingsSavePromise) {
+    const saved = await generationSettingsSavePromise;
+    if (!saved) return false;
+    return generationSettingsDirty ? saveGenerationSettings() : true;
+  }
+  if (!generationSettingsDirty) return true;
+  let settings;
+  try { settings = readGenerationSettings(); }
+  catch (error) { setStatus(error.message, true); return false; }
+  const revision = generationSettingsRevision;
+  generationSettingsSavePromise = (async () => {
+    try {
+      await patchAgent({ action: 'set_generation_settings', settings }, 'Не удалось сохранить параметры генерации.');
+      if (generationSettingsRevision === revision) generationSettingsDirty = false;
+      return true;
+    } catch (error) { setStatus(readableFetchError(error, 'Не удалось сохранить параметры генерации.'), true); return false; }
+  })();
+  const pending = generationSettingsSavePromise;
+  const saved = await pending;
+  if (generationSettingsSavePromise === pending) generationSettingsSavePromise = null;
+  if (!saved) return false;
+  if (generationSettingsDirty) return saveGenerationSettings();
+  return true;
+}
+
+function queueGenerationSettingsSave() {
+  clearTimeout(generationSettingsSaveTimer);
+  generationSettingsSaveTimer = setTimeout(() => { saveGenerationSettings(); }, 250);
 }
 
 function renderProfile(profile = {}) {
@@ -607,18 +692,36 @@ async function loadAgentModels() {
     const payload = await readAgentResponse(response);
     if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить список моделей.');
     agentModel.replaceChildren();
+    const deepSeekGroup = document.createElement('optgroup'); deepSeekGroup.label = 'DeepSeek';
+    const localGroup = document.createElement('optgroup'); localGroup.label = 'Локальные';
     (payload.models || []).forEach((model) => {
-      const option = document.createElement('option'); option.value = model; option.textContent = modelLabel(model); agentModel.append(option);
+      const option = document.createElement('option'); option.value = model; option.textContent = modelLabel(model);
+      (model.startsWith('ollama/') ? localGroup : deepSeekGroup).append(option);
     });
-    if (!agentModel.options.length) throw new Error('DeepSeek не вернул доступных моделей для чата.');
+    if (deepSeekGroup.children.length) agentModel.append(deepSeekGroup);
+    if (localGroup.children.length) agentModel.append(localGroup);
+    modelCatalogReady = true;
+    if (!agentModel.options.length) { modelDescription.textContent = 'Нет доступных моделей. Запустите Ollama или настройте ключ DeepSeek.'; return; }
+    const previousModel = selectedAgentModel;
     if (![...agentModel.options].some((option) => option.value === selectedAgentModel)) selectedAgentModel = agentModel.options[0].value;
     agentModel.value = selectedAgentModel; agentModel.disabled = false;
-    modelDescription.textContent = 'Выбор сохраняется для текущего браузерного чата и применяется к следующему сообщению.';
+    updateModelPickerLabel();
+    if (selectedAgentModel !== previousModel) {
+      modelSelectionRevision++;
+      await patchAgent({ action: 'set_model', model: selectedAgentModel }, 'Не удалось выбрать доступную модель.');
+    }
+    const hasLocal = [...agentModel.options].some((option) => option.value.startsWith('ollama/'));
+    modelDescription.textContent = hasLocal ? 'Выбор применяется к следующему сообщению. Локальные модели обрабатывают запросы через Ollama.' : 'Локальная Ollama не обнаружена; доступны только модели DeepSeek.';
   } catch (error) { modelDescription.textContent = readableFetchError(error, 'Не удалось загрузить список моделей.'); }
 }
 agentModel.addEventListener('change', async () => {
-  const previous = selectedAgentModel; selectedAgentModel = agentModel.value; agentModel.disabled = true;
-  try { await patchAgent({ action: 'set_model', model: selectedAgentModel }, 'Не удалось сменить модель.'); setStatus(`Выбрана модель: ${modelLabel(selectedAgentModel)}.`); }
+  const previous = selectedAgentModel; const next = agentModel.value; agentModel.disabled = true; modelSelectionRevision++;
+  try {
+    if (!await saveGenerationSettings()) throw new Error('Сначала исправьте параметры генерации.')
+    selectedAgentModel = next; agentModel.value = next;
+    await patchAgent({ action: 'set_model', model: next }, 'Не удалось сменить модель.');
+    updateModelPickerLabel(); setStatus(`Провайдер: ${modelProvider(selectedAgentModel)} · модель: ${modelLabel(selectedAgentModel)}.`); modelPickerDialog.close();
+  }
   catch (error) { selectedAgentModel = previous; agentModel.value = previous; setStatus(readableFetchError(error, 'Не удалось сменить модель.'), true); }
   finally { agentModel.disabled = false; }
 });
@@ -715,11 +818,15 @@ recentMessages.addEventListener('change', () => {
 async function loadAgentHistory() {
   const editRevision = recentMessagesEditRevision;
   const stateRevision = recentMessagesStateRevision;
+  const modelRevision = modelSelectionRevision;
+  const settingsRevision = generationSettingsRevision;
   try {
     const response = await fetch('/api/agent/chat', { cache: 'no-store' }); const payload = await readAgentResponse(response);
     if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить чат.');
     const preserveRecentMessages = recentMessagesDirty || Boolean(recentMessagesDrainPromise) || editRevision !== recentMessagesEditRevision || stateRevision !== recentMessagesStateRevision;
-    renderAgentHistory(payload.messages); renderContextState(payload, { preserveRecentMessages }); renderTokenReport(payload);
+    const preserveModelSelection = modelRevision !== modelSelectionRevision;
+    const preserveGenerationSettings = preserveModelSelection || settingsRevision !== generationSettingsRevision;
+    renderAgentHistory(payload.messages); renderContextState(payload, { preserveRecentMessages, preserveModelSelection, preserveGenerationSettings }); renderTokenReport(payload);
   } catch (error) { chatStatus.textContent = readableFetchError(error, 'Не удалось загрузить чат.'); }
 }
 // Scheduled MCP jobs append progress server-side. Polling lets those entries
@@ -732,6 +839,8 @@ agentForm.addEventListener('submit', async (event) => {
   if (!Number.isInteger(n) || n < 2 || n > 40) { setStatus('N должен быть целым числом от 2 до 40.', true); recentMessages.focus(); return; }
   let ragOptions;
   try { ragOptions = selectedRAGOptions(); } catch (error) { setStatus(error.message, true); return; }
+  let settings;
+  try { settings = readGenerationSettings(); } catch (error) { setStatus(error.message, true); return; }
   agentSubmit.disabled = true;
   setStatus(activeTask.goal ? 'Агент проектирует… Можно нажать «Пауза», чтобы остановить работу.' : 'Агент отвечает…');
   try {
@@ -739,12 +848,20 @@ agentForm.addEventListener('submit', async (event) => {
     n = Number(recentMessages.value);
     recentMessages.disabled = true;
     const submittedNRevision = recentMessagesEditRevision;
-    const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked, ragOptions };
+    const submittedSettingsRevision = generationSettingsRevision;
+    const submittedModelRevision = modelSelectionRevision;
+    const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked, ragOptions, settings };
     requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON(requestBody)}\n\nОжидание ответа…`;
     const response = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(requestBody) });
     const payload = await readAgentResponse(response);
+    const responseModel = payload.model || requestBody.model;
     requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON({
       httpStatus: response.status,
+      provider: modelProvider(responseModel),
+      model: modelLabel(responseModel),
+      localRequest: responseModel.startsWith('ollama/'),
+      finishReason: payload.finishReason || '',
+      requestedSettings: settings,
       taskState: payload.task,
       modelCallSkipped: payload.task?.status === 'paused',
       contextSentToModel: payload.requestMessages,
@@ -757,16 +874,19 @@ agentForm.addEventListener('submit', async (event) => {
       mcpToolExecutions: payload.toolExecutions || [],
     })}`;
     if (!response.ok) throw new Error(payload.error || 'Не удалось получить ответ агента.');
+    if (submittedSettingsRevision === generationSettingsRevision) generationSettingsDirty = false;
     recentMessagesStateRevision++;
     if (submittedNRevision === recentMessagesEditRevision && payload.recentMessages === n) recentMessagesDirty = false;
     requestLog.textContent += `\n\nОТВЕТ АГЕНТА\n${payload.answer}`;
-    renderAgentHistory(payload.messages); renderContextState(payload, { preserveRecentMessages: submittedNRevision !== recentMessagesEditRevision }); renderTokenReport(payload);
+    const preserveModelSelection = submittedModelRevision !== modelSelectionRevision;
+    const preserveGenerationSettings = preserveModelSelection || submittedSettingsRevision !== generationSettingsRevision;
+    renderAgentHistory(payload.messages); renderContextState(payload, { preserveRecentMessages: submittedNRevision !== recentMessagesEditRevision, preserveModelSelection, preserveGenerationSettings }); renderTokenReport(payload);
     agentMessage.value = ''; agentMessage.focus();
     setStatus(payload.task?.status === 'paused' ? 'Задача на паузе: запрос к модели не выполнялся.' : 'Готово.');
   } catch (error) { setStatus(readableFetchError(error, 'Не удалось получить ответ агента.'), true); }
   finally { recentMessages.disabled = false; agentSubmit.disabled = false; }
 });
-clearAgentHistory.addEventListener('click', async () => {
+  clearAgentHistory.addEventListener('click', async () => {
   if (!window.confirm('Удалить всю историю этого чата? Это действие нельзя отменить.')) return;
   clearAgentHistory.disabled = true;
   try {
@@ -778,6 +898,5 @@ clearAgentHistory.addEventListener('click', async () => {
 });
 
 renderTask({});
-loadAgentHistory();
-loadAgentModels();
+loadAgentModels().finally(() => loadAgentHistory());
 loadMCP();
