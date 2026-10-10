@@ -419,7 +419,11 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusBadRequest, "В запросе должен быть один JSON-объект.")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), agentTimeout)
+	requestTimeout := agentTimeout
+	if strings.HasPrefix(input.Model, "ollama/") {
+		requestTimeout = 6 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 	result, err := h.agent.RespondWithUserOptionsRAGConfiguredSettings(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model, input.RAGEnabled, input.RAGOptions, input.Settings)
 	if err != nil {
@@ -951,6 +955,8 @@ func validateSettings(settings *models.GenerationSettings) error {
 
 func errorResponse(err error) (int, string) {
 	switch {
+	case strings.Contains(err.Error(), "Ollama"):
+		return http.StatusBadGateway, "Локальная Ollama не вернула ответ. Проверьте, что модель установлена и сервер Ollama запущен."
 	case errors.Is(err, deepseek.ErrNoAPIKey):
 		return http.StatusServiceUnavailable, "API-ключ не настроен на сервере. Добавьте DEEPSEEK_API_KEY и перезапустите приложение."
 	case errors.Is(err, deepseek.ErrUnauthorized):
@@ -960,7 +966,7 @@ func errorResponse(err error) (int, string) {
 	case errors.Is(err, deepseek.ErrTimeout):
 		return http.StatusGatewayTimeout, "DeepSeek не успел ответить за 120 секунд. Повторите запрос немного позже."
 	default:
-		return http.StatusBadGateway, "Не удалось получить ответ от DeepSeek. Попробуйте ещё раз."
+		return http.StatusBadGateway, "Не удалось получить ответ от модели. Попробуйте ещё раз."
 	}
 }
 
