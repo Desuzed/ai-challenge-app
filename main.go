@@ -62,7 +62,7 @@ func main() {
 		log.Fatalf("load agent history: %v", err)
 	}
 	handler.SetAgent(persistentAgent)
-	persistentAgent.SetRetriever(&rag.Searcher{Root: ".", IndexDir: ".local/rag", Model: "embeddinggemma", Embedder: ragindex.Ollama{URL: ollamaURL, Model: "embeddinggemma"}})
+	persistentAgent.SetRetriever(&rag.Searcher{Root: ".", IndexDir: ".local/rag", Model: "embeddinggemma", Embedder: ragindex.Ollama{URL: ollamaURL, Model: "embeddinggemma", KeepAlive: "0"}})
 	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
