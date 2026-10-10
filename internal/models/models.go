@@ -194,6 +194,8 @@ type RAGTrace struct {
 	OutputTokenBudget          int        `json:"outputTokenBudget,omitempty"`
 	CompletionFinishReason     string     `json:"completionFinishReason,omitempty"`
 	CompletionCharacters       int        `json:"completionCharacters,omitempty"`
+	CompletionAttempts         int        `json:"completionAttempts,omitempty"`
+	CompletionRetryReason      string     `json:"completionRetryReason,omitempty"`
 	VectorCandidateCount       int        `json:"vectorCandidateCount"`
 	VectorFilteredCount        int        `json:"vectorFilteredCount"`
 	LexicalCandidateCount      int        `json:"lexicalCandidateCount"`
@@ -509,6 +511,11 @@ type ModelCompletion struct {
 	Usage          ModelUsage
 	ToolCalls      []ToolCall
 	ToolExecutions []ToolExecution
+	// Actual generation budget and attempt count for local structured output.
+	// Usage includes every attempt, while Answer contains only the final one.
+	OutputTokenBudget     int
+	CompletionAttempts    int
+	CompletionRetryReason string
 }
 
 type ToolExecution struct {

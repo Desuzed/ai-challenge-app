@@ -50,12 +50,18 @@ func isLoopbackURL(target *url.URL) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// IsLocalURL is shared by the local embedding transport.
+func IsLocalURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && isLoopbackURL(parsed)
+}
+
 type chatRequest struct {
 	Model    string                  `json:"model"`
 	Messages []message               `json:"messages"`
 	Stream   bool                    `json:"stream"`
 	Think    bool                    `json:"think"`
-	Format   string                  `json:"format,omitempty"`
+	Format   any                     `json:"format,omitempty"`
 	Options  map[string]any          `json:"options"`
 	Tools    []models.ToolDefinition `json:"tools,omitempty"`
 }
@@ -65,7 +71,9 @@ type showRequest struct {
 }
 
 type showResponse struct {
-	Thinking struct {
+	RemoteHost  string `json:"remote_host"`
+	RemoteModel string `json:"remote_model"`
+	Thinking    struct {
 		Values  []bool `json:"values"`
 		Default *bool  `json:"default"`
 	} `json:"thinking"`
@@ -171,14 +179,73 @@ func (c *Client) CompleteMessagesModel(ctx context.Context, modelID string, mess
 	return c.complete(ctx, modelID, messages, settings, "", nil)
 }
 func (c *Client) CompleteMessagesModelJSON(ctx context.Context, modelID string, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
-	return c.complete(ctx, modelID, messages, settings, "json", nil)
+	var format any = "json"
+	compact := false
+	for _, item := range messages {
+		if item.Role == "system" && strings.Contains(item.Content, `"claims"`) && strings.Contains(item.Content, `"chunkId"`) {
+			compact = strings.Contains(item.Content, `используй "answer":""`)
+			format = groundedSchema(compact, strings.Contains(item.Content, "Сохрани также поле plan"))
+			break
+		}
+	}
+	completion, err := c.complete(ctx, modelID, messages, settings, format, nil)
+	if err != nil {
+		return completion, err
+	}
+	if _, grounded := format.(map[string]any); grounded {
+		completion.OutputTokenBudget = settings.MaxTokens
+		completion.CompletionAttempts = 1
+	}
+	// A truncated JSON document is never shown or salvaged. Regenerate once
+	// with room for the envelope, within the ordinary RAG reservation (2200).
+	// Also recheck an empty claim list when documents were supplied; the second
+	// response may still abstain, and evidence validation remains mandatory.
+	// Only compact factual RAG is eligible; free chat, tools and planner aren't.
+	retryReason := ""
+	if completion.FinishReason == "length" && !json.Valid([]byte(completion.Answer)) {
+		retryReason = "truncated_json"
+	} else if compact {
+		var envelope struct {
+			Claims []json.RawMessage `json:"claims"`
+		}
+		if json.Unmarshal([]byte(completion.Answer), &envelope) == nil && len(envelope.Claims) == 0 {
+			for _, item := range messages {
+				if item.Role == "system" && strings.HasPrefix(item.Content, "Фрагменты локальных документов для ответа на последний вопрос.") && strings.Contains(item.Content, "Фрагмент 1") {
+					retryReason = "empty_claims_with_retrieved_context"
+					break
+				}
+			}
+		}
+	}
+	if !compact || retryReason == "" || settings.MaxTokens >= 2200 {
+		return completion, nil
+	}
+	retrySettings := settings
+	retrySettings.MaxTokens = 2200
+	log.Printf("LLM structured retry provider=ollama model=%s initial_budget=%d retry_budget=%d reason=%s", modelID, settings.MaxTokens, retrySettings.MaxTokens, retryReason)
+	retry, err := c.complete(ctx, modelID, messages, retrySettings, format, nil)
+	if err != nil {
+		return models.ModelCompletion{}, err
+	}
+	retry.Usage.InputTokens += completion.Usage.InputTokens
+	retry.Usage.OutputTokens += completion.Usage.OutputTokens
+	retry.Usage.TotalTokens += completion.Usage.TotalTokens
+	retry.Usage.CacheHitTokens += completion.Usage.CacheHitTokens
+	retry.Usage.CacheMissTokens += completion.Usage.CacheMissTokens
+	retry.OutputTokenBudget = retrySettings.MaxTokens
+	retry.CompletionAttempts = 2
+	retry.CompletionRetryReason = retryReason
+	return retry, nil
 }
 func (c *Client) CompleteMessagesModelWithTools(ctx context.Context, modelID string, messages []models.ChatMessage, settings models.GenerationSettings, tools []models.ToolDefinition) (models.ModelCompletion, error) {
 	return c.complete(ctx, modelID, messages, settings, "", tools)
 }
 
-func (c *Client) complete(ctx context.Context, modelID string, messages []models.ChatMessage, settings models.GenerationSettings, format string, tools []models.ToolDefinition) (models.ModelCompletion, error) {
+func (c *Client) complete(ctx context.Context, modelID string, messages []models.ChatMessage, settings models.GenerationSettings, format any, tools []models.ToolDefinition) (models.ModelCompletion, error) {
 	modelID = strings.TrimPrefix(modelID, ModelPrefix)
+	if strings.Contains(strings.ToLower(modelID), "cloud") {
+		return models.ModelCompletion{}, errors.New("Облачная модель Ollama запрещена для локальной генерации")
+	}
 	if modelID == "" {
 		return models.ModelCompletion{}, errors.New("Не выбрана локальная модель Ollama.")
 	}
@@ -193,6 +260,16 @@ func (c *Client) complete(ctx context.Context, modelID string, messages []models
 	if err != nil {
 		log.Printf("LLM metadata provider=ollama model=%s thinking=unknown error=%v", modelID, err)
 		return models.ModelCompletion{}, fmt.Errorf("не удалось безопасно определить режим рассуждений локальной модели: %w", err)
+	}
+	// Qwen3 accepts think=false for native JSON despite this runner advertising
+	// only true in /api/show. With think=true a RAG request can exhaust its token
+	// budget in the thinking channel and never produce the JSON envelope.
+	// Keep ordinary chat/tool reasoning policy and original messages intact.
+	if format != nil && format != "" && strings.HasPrefix(strings.ToLower(modelID), "qwen3") {
+		think = false
+	}
+	if format == "" {
+		format = nil
 	}
 	ollamaMessages := make([]message, 0, len(messages))
 	for i, item := range messages {
@@ -285,6 +362,9 @@ func (c *Client) thinkingPreference(ctx context.Context, modelID string) (bool, 
 	var metadata showResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&metadata); err != nil {
 		return false, err
+	}
+	if metadata.RemoteHost != "" || metadata.RemoteModel != "" {
+		return false, errors.New("Удалённая модель Ollama запрещена для локальной генерации")
 	}
 	preference := false
 	hasTrue, hasFalse := false, false

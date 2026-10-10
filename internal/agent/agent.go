@@ -428,7 +428,8 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	}
 	request := a.requestMessagesForModeLocked(c, u, plannerTurn)
 	if ragEnabled {
-		request = addGroundedRAGContext(request, ragResult.Matches, plannerTurn)
+		compactLocal := !toolTurn && strings.HasPrefix(c.model, "ollama/") && c.hasGenerationSettings && c.generationSettings.MaxTokens <= 1024
+		request = addGroundedRAGContext(request, ragResult.Matches, plannerTurn, compactLocal)
 	}
 	skipGroundedCall := ragEnabled && len(ragResult.Matches) == 0 && !plannerTurn && !toolTurn && !isTaskMemoryQuestion(message)
 	requestForReport := request
@@ -618,6 +619,9 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	report = a.tokenReportLocked(c, requestForReport, message, completion.Usage)
 	if ragEnabled && !plannerTurn {
 		reserve := groundedOutputBudget(message)
+		if completion.OutputTokenBudget > 0 {
+			reserve = completion.OutputTokenBudget
+		}
 		if skipGroundedCall {
 			reserve = 0
 		}
@@ -637,6 +641,8 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		response.RAGTrace.OutputTokenBudget = response.Tokens.ReservedOutputTokens
 		response.RAGTrace.CompletionFinishReason = completion.FinishReason
 		response.RAGTrace.CompletionCharacters = utf8.RuneCountInString(completion.Answer)
+		response.RAGTrace.CompletionAttempts = completion.CompletionAttempts
+		response.RAGTrace.CompletionRetryReason = completion.CompletionRetryReason
 		if ragAbstained {
 			response.RAGReason = ragFailureReason
 			if response.RAGReason == "" {
@@ -670,7 +676,7 @@ type groundedEnvelope struct {
 	Claims []groundedClaim `json:"claims"`
 }
 
-func addGroundedRAGContext(request []models.ChatMessage, matches []rag.Match, planner bool) []models.ChatMessage {
+func addGroundedRAGContext(request []models.ChatMessage, matches []rag.Match, planner, compactLocal bool) []models.ChatMessage {
 	contract := `Отвечай на пользовательский вопрос с учётом обычного контекста диалога, выбранной стратегии, профиля, памяти и состояния планировщика. Факты о приложении/внешнем мире можно сообщать только через claims с дословными цитатами из найденных документов. Пользовательские цели и ограничения из отдельной task memory можно применять как пожелания, но не выдавать за факты о проекте. При отсутствии проверяемого документационного ответа верни claims:[] и явно скажи, что ответа нет в найденных документах. Цитируй короткий достаточный фрагмент точно; не дублируй список claims в answer. Формат — только JSON: {"answer":"ответ пользователю","claims":[{"text":"подтверждённое фактологическое утверждение","evidence":[{"chunkId":"точный chunk_id","quote":"дословная цитата из чанка"}]}]}.`
 	var latestUser string
 	for index := len(request) - 1; index >= 0; index-- {
@@ -678,6 +684,9 @@ func addGroundedRAGContext(request []models.ChatMessage, matches []rag.Match, pl
 			latestUser = request[index].Content
 			break
 		}
+	}
+	if compactLocal && !planner && !isTaskMemoryQuestion(latestUser) && !detailedGroundedRequest(latestUser) {
+		contract += ` Для этого краткого ответа используй "answer":"": сервер сам покажет проверенные claims. Сам ответ на вопрос обязательно запиши в claims, если он есть в найденных фрагментах; пустое поле answer не означает отсутствие фактов. Не повторяй факты в answer и не добавляй plan. Верни не более двух claims, каждый — одна короткая законченная мысль. Не повторяй одно утверждение с цитатами из разных источников. Для quote скопируй самое короткое достаточное предложение или строку списка, а не весь раздел. Заверши каждое предложение целиком. JSON запиши компактно, без отступов.`
 	}
 	if detailedGroundedRequest(latestUser) {
 		contract += ` Последняя реплика явно просит подробное итоговое объяснение; она имеет приоритет над более ранней просьбой о кратком стиле. Если документы подтверждают этапы, расположи 4–8 claims в логичном порядке end-to-end и раскрой каждый этап понятным текстом. Не перечисляй имена helper-функций и внутренние предикаты, если пользователь не спрашивал реализацию: объясни фактический путь данных и действия сервера. Все фактические предложения помести в claims с точной цитатой; поле answer используй только для короткого заголовка или связки, без новых фактов.`
@@ -860,11 +869,12 @@ func validateGroundedEnvelopeClaims(parsed groundedEnvelope, matches []rag.Match
 		seen := map[string]bool{}
 		allEvidenceValid := len(claim.Evidence) > 0
 		for _, ev := range claim.Evidence {
-			match, ok := chunks[ev.ChunkID]
-			quote := strings.TrimSpace(ev.Quote)
-			key := ev.ChunkID + "\x00" + quote
+			evidence, ok := resolveGroundedEvidence(ev, chunks)
+			match := chunks[evidence.ChunkID]
+			quote := evidence.Quote
+			key := evidence.ChunkID + "\x00" + quote
 			if ok && quote != "" && strings.Contains(match.Chunk.Text, quote) && !seen[key] {
-				valid.Evidence = append(valid.Evidence, groundedEvidence{ChunkID: ev.ChunkID, Quote: quote})
+				valid.Evidence = append(valid.Evidence, evidence)
 				seen[key] = true
 			} else {
 				allEvidenceValid = false
