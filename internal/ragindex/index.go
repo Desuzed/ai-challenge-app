@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"ai-challenge-app/internal/ollama"
 )
 
 const MaxChunkRunes = 1200
@@ -219,14 +221,24 @@ type Embedder interface {
 type Ollama struct {
 	URL, Model string
 	Client     *http.Client
+	// Chat retrieval can release the embedding model before generation on
+	// machines where keeping both runners resident causes memory pressure.
+	KeepAlive string
 }
 
 func (o Ollama) Embed(ctx context.Context, texts []string) ([][]float64, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
+	if !ollama.IsLocalURL(o.URL) {
+		return nil, errors.New("OLLAMA_URL для эмбеддингов должен указывать на loopback-адрес")
+	}
 	url := strings.TrimRight(o.URL, "/") + "/api/embed"
-	body, _ := json.Marshal(map[string]any{"model": o.Model, "input": texts})
+	payload := map[string]any{"model": o.Model, "input": texts}
+	if o.KeepAlive != "" {
+		payload["keep_alive"] = o.KeepAlive
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -234,7 +246,12 @@ func (o Ollama) Embed(ctx context.Context, texts []string) ([][]float64, error) 
 	req.Header.Set("Content-Type", "application/json")
 	client := o.Client
 	if client == nil {
-		client = &http.Client{Timeout: 2 * time.Minute}
+		client = &http.Client{Timeout: 2 * time.Minute, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if !ollama.IsLocalURL(req.URL.String()) {
+				return errors.New("редирект эмбеддингов на удалённый адрес запрещён")
+			}
+			return nil
+		}}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
