@@ -15,6 +15,7 @@ const openModelPicker = document.querySelector('#open-model-picker');
 const modelPickerDialog = document.querySelector('#model-picker-dialog');
 const closeModelPicker = document.querySelector('#close-model-picker');
 const contextSettingsDialog = document.querySelector('#context-settings-dialog');
+const contextSettingsStatus = document.querySelector('#context-settings-status');
 const closeContextSettings = document.querySelector('#close-context-settings');
 const doneContextSettings = document.querySelector('#done-context-settings');
 const contextStrategy = document.querySelector('#context-strategy');
@@ -36,6 +37,13 @@ const modelDescription = document.querySelector('#model-description');
 const generationTemperature = document.querySelector('#generation-temperature');
 const generationTopP = document.querySelector('#generation-top-p');
 const generationMaxTokens = document.querySelector('#generation-max-tokens');
+const generationLocalSettings = document.querySelector('#generation-local-settings');
+const generationContextWindow = document.querySelector('#generation-context-window');
+const generationLocalThink = document.querySelector('#generation-local-think');
+const generationLocalJSON = document.querySelector('#generation-local-json');
+const generationTopK = document.querySelector('#generation-top-k');
+const generationSeed = document.querySelector('#generation-seed');
+const generationRepeatPenalty = document.querySelector('#generation-repeat-penalty');
 const memoryLayers = document.querySelector('#memory-layers');
 const clearLongTermMemory = document.querySelector('#clear-long-term-memory');
 const profileForm = document.querySelector('#profile-form');
@@ -76,8 +84,9 @@ let generationSettingsRevision = 0;
 let modelSelectionRevision = 0;
 let generationSettingsSaveTimer = null;
 let generationSettingsSavePromise = null;
-[generationTemperature, generationTopP, generationMaxTokens].forEach((input) => input.addEventListener('input', () => { generationSettingsDirty = true; generationSettingsRevision++; }));
-[generationTemperature, generationTopP, generationMaxTokens].forEach((input) => input.addEventListener('change', queueGenerationSettingsSave));
+let savedLocalGenerationSettings = {};
+[generationTemperature, generationTopP, generationMaxTokens, generationContextWindow, generationLocalThink, generationLocalJSON, generationTopK, generationSeed, generationRepeatPenalty].forEach((input) => input.addEventListener('input', () => { generationSettingsDirty = true; generationSettingsRevision++; }));
+[generationTemperature, generationTopP, generationMaxTokens, generationContextWindow, generationLocalThink, generationLocalJSON, generationTopK, generationSeed, generationRepeatPenalty].forEach((input) => input.addEventListener('change', queueGenerationSettingsSave));
 ragEnabled.checked = localStorage.getItem('ragEnabled') === 'true';
 ragEnabledChat.checked = ragEnabled.checked;
 function syncRAGToggle(event) {
@@ -106,8 +115,8 @@ const strategyDescriptions = {
 openContextSettings.addEventListener('click', () => contextSettingsDialog.showModal());
 contextSettingsDialog.addEventListener('close', () => openContextSettings.focus());
 async function closeContextSettingsAfterSave() {
-  if (!await saveGenerationSettings()) return;
   contextSettingsDialog.close();
+  await saveGenerationSettings();
 }
 closeContextSettings.addEventListener('click', closeContextSettingsAfterSave);
 doneContextSettings.addEventListener('click', closeContextSettingsAfterSave);
@@ -127,6 +136,11 @@ function readableFetchError(error, fallback) {
 function setStatus(text, isError = false) {
   status.textContent = text;
   status.classList.toggle('error', isError);
+  if (contextSettingsDialog.open) {
+    contextSettingsStatus.textContent = text;
+    contextSettingsStatus.hidden = !isError || !text;
+    if (isError && text) contextSettingsStatus.scrollIntoView({ block: 'nearest' });
+  }
 }
 function modelLabel(model) {
   if (model === 'deepseek-flash') return 'DeepSeek Flash';
@@ -134,7 +148,10 @@ function modelLabel(model) {
   return model.startsWith('ollama/') ? model.slice('ollama/'.length) : model;
 }
 function modelProvider(model) { return model.startsWith('ollama/') ? 'Локальные' : 'DeepSeek'; }
-function updateModelPickerLabel() { openModelPicker.textContent = `Модель: ${modelProvider(selectedAgentModel)} · ${modelLabel(selectedAgentModel)}`; }
+function updateModelPickerLabel() {
+  openModelPicker.textContent = `Модель: ${modelProvider(selectedAgentModel)} · ${modelLabel(selectedAgentModel)}`;
+  generationLocalSettings.hidden = !selectedAgentModel.startsWith('ollama/');
+}
 
 async function readJSONResponse(response, operation) {
   const body = await response.text();
@@ -381,9 +398,20 @@ function renderContextState(payload, { preserveRecentMessages = false, preserveM
     updateModelPickerLabel();
   }
   if (payload.settings && !preserveGenerationSettings && (!generationSettingsDirty || forceGenerationSettings)) {
+    savedLocalGenerationSettings = Object.fromEntries(
+      ['contextWindow', 'topK', 'seed', 'repeatPenalty', 'localJson', 'localThink']
+        .filter((key) => payload.settings[key] !== undefined)
+        .map((key) => [key, payload.settings[key]])
+    );
     generationTemperature.value = payload.settings.temperature ?? '';
     generationTopP.value = payload.settings.topP ?? '';
     if (payload.settings.maxTokens) generationMaxTokens.value = payload.settings.maxTokens;
+    generationContextWindow.value = payload.settings.contextWindow || 8192;
+    generationTopK.value = payload.settings.topK ?? '';
+    generationSeed.value = payload.settings.seed ?? '';
+    generationRepeatPenalty.value = payload.settings.repeatPenalty ?? '';
+    generationLocalJSON.checked = payload.settings.localJson || false;
+    generationLocalThink.value = payload.settings.localThink === true ? 'on' : payload.settings.localThink === false ? 'off' : 'auto';
   }
   strategyDescription.textContent = strategyDescriptions[contextStrategy.value];
   window.currentPlannerMode = payload.plannerMode || 'disabled';
@@ -452,9 +480,30 @@ function readGenerationSettings() {
   if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192 || topP !== null && (!Number.isFinite(topP) || topP <= 0 || topP > 1) || topP === null && (temperature === null || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
     throw new Error('Проверьте параметры генерации: temperature 0–2 или top_p больше 0 и не больше 1; лимит ответа 1–8192.');
   }
-  const settings = { maxTokens };
+  const settings = { ...savedLocalGenerationSettings, maxTokens };
   if (topP !== null) settings.topP = topP;
   else settings.temperature = temperature;
+  if (!selectedAgentModel.startsWith('ollama/')) return settings;
+  const contextWindow = Number(generationContextWindow.value);
+  if (!Number.isInteger(contextWindow) || contextWindow < 512 || contextWindow > 32768) throw new Error('Окно контекста: целое число от 512 до 32768 токенов. Параметры не сохранены.');
+  if (maxTokens >= contextWindow) throw new Error(`Лимит ответа (${maxTokens}) должен быть меньше окна контекста (${contextWindow}). Уменьшите лимит ответа или увеличьте окно. Параметры не сохранены.`);
+  settings.contextWindow = contextWindow;
+  settings.localJson = generationLocalJSON.checked;
+  delete settings.topK;
+  delete settings.seed;
+  delete settings.repeatPenalty;
+  delete settings.localThink;
+  for (const [key, input, min, max, integer] of [
+    ['topK', generationTopK, 1, 1000, true],
+    ['seed', generationSeed, -2147483648, 2147483647, true],
+    ['repeatPenalty', generationRepeatPenalty, 0, 2, false],
+  ]) {
+    if (input.value === '') continue;
+    const value = Number(input.value);
+    if (!Number.isFinite(value) || integer && !Number.isInteger(value) || value < min || value > max) throw new Error(`Проверьте ${key}: от ${min} до ${max}${integer ? ', целое число' : ''}.`);
+    settings[key] = value;
+  }
+  if (generationLocalThink.value !== 'auto') settings.localThink = generationLocalThink.value === 'on';
   return settings;
 }
 
@@ -474,7 +523,10 @@ async function saveGenerationSettings() {
   generationSettingsSavePromise = (async () => {
     try {
       await patchAgent({ action: 'set_generation_settings', settings }, 'Не удалось сохранить параметры генерации.');
-      if (generationSettingsRevision === revision) generationSettingsDirty = false;
+      if (generationSettingsRevision === revision) {
+        generationSettingsDirty = false;
+        contextSettingsStatus.hidden = true;
+      }
       return true;
     } catch (error) { setStatus(readableFetchError(error, 'Не удалось сохранить параметры генерации.'), true); return false; }
   })();
@@ -861,6 +913,7 @@ agentForm.addEventListener('submit', async (event) => {
       model: modelLabel(responseModel),
       localRequest: responseModel.startsWith('ollama/'),
       finishReason: payload.finishReason || '',
+      localMetrics: payload.localMetrics || null,
       requestedSettings: settings,
       taskState: payload.task,
       modelCallSkipped: payload.task?.status === 'paused',
