@@ -297,7 +297,7 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		return models.AgentResponse{}, err
 	}
 	if selectedSettings.MaxTokens != 0 {
-		if err := validateGenerationSettings(selectedSettings); err != nil {
+		if err := validateGenerationSettings(selectedSettings, c.model); err != nil {
 			return models.AgentResponse{}, err
 		}
 		if selectedSettings.Temperature != nil && selectedSettings.TopP != nil {
@@ -628,6 +628,7 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		report = reserveOutputTokens(report, reserve)
 	}
 	response := a.responseLocked(c, u, answer, requestForReport, report)
+	response.LocalMetrics = completion.LocalMetrics
 	response.ToolExecutions = append([]models.ToolExecution(nil), completion.ToolExecutions...)
 	if ragEnabled {
 		response.RAGEnabled = true
@@ -653,7 +654,12 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	return response, nil
 }
 
-func validateGenerationSettings(settings models.GenerationSettings) error {
+func validateGenerationSettings(settings models.GenerationSettings, model string) error {
+	if strings.HasPrefix(model, "ollama/") {
+		if err := settings.ValidateLocal(); err != nil {
+			return err
+		}
+	}
 	if settings.MaxTokens < 1 || settings.MaxTokens > 8192 || settings.Temperature != nil && (*settings.Temperature < 0 || *settings.Temperature > 2) || settings.TopP != nil && (*settings.TopP <= 0 || *settings.TopP > 1) {
 		return errors.New("Параметры генерации: max tokens 1–8192, temperature 0–2, top_p больше 0 и не больше 1.")
 	}
@@ -2084,6 +2090,9 @@ func (a *Agent) tokenReportLocked(c *conversation, request []models.ChatMessage,
 	note := estimateNote
 	if strings.HasPrefix(c.model, "ollama/") {
 		limit = 8192
+		if c.hasGenerationSettings && c.generationSettings.ContextWindow > 0 {
+			limit = c.generationSettings.ContextWindow
+		}
 		note = "Локальная модель Ollama: входные и выходные токены указаны по usage API. Стоимость облачного API — 0; до ответа размер запроса оценивается по символам."
 	}
 	report := models.AgentTokenReport{HistoryTokens: estimateDialogueHistoryTokens(history), CurrentMessageTokens: estimateMessageTokens(models.ChatMessage{Role: "user", Content: current}), EstimatedRequestTokens: estimateMessagesTokens(request), RequestTokens: usage.InputTokens, ResponseTokens: usage.OutputTokens, ContextLimitTokens: limit, ReservedOutputTokens: reservedOutput, EstimateNote: note, CacheHitTokens: usage.CacheHitTokens, CacheMissTokens: usage.CacheMissTokens}
@@ -2144,7 +2153,7 @@ func (a *Agent) ApplyContextCommandForUser(userID, sessionID string, command mod
 	case "set_model":
 		err = a.configureLocked(c, 0, "", command.Model)
 	case "set_generation_settings":
-		if err = validateGenerationSettings(command.Settings); err == nil {
+		if err = validateGenerationSettings(command.Settings, c.model); err == nil {
 			c.generationSettings = command.Settings
 			c.hasGenerationSettings = true
 		}
