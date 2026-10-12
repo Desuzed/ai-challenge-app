@@ -20,10 +20,12 @@ import (
 	"ai-challenge-app/internal/models"
 )
 
-const ModelPrefix = "ollama/"
+const ModelPrefix = models.LocalOllamaPrefix
+const RemoteModelPrefix = models.RemoteOllamaPrefix
 
 type Client struct {
 	baseURL    string
+	remote     bool
 	http       *http.Client
 	thinkingMu sync.RWMutex
 	thinking   map[string]bool
@@ -36,6 +38,36 @@ func New(baseURL string, timeout time.Duration) *Client {
 		}
 		return nil
 	}}, thinking: make(map[string]bool)}
+}
+
+// NewRemote is an explicit, separately configured connection to a model server.
+// The existing offline client and embedding transport remain loopback-only.
+func NewRemote(baseURL string, timeout time.Duration) *Client {
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), remote: true,
+		http: &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil},
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }},
+		thinking: make(map[string]bool)}
+}
+func (c *Client) modelPrefix() string {
+	if c.remote {
+		return RemoteModelPrefix
+	}
+	return ModelPrefix
+}
+func (c *Client) validateURL() error {
+	parsed, err := url.Parse(c.baseURL)
+	if c.remote {
+		if err != nil || parsed == nil || parsed.Hostname() == "" ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil ||
+			parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" {
+			return errors.New("REMOTE_OLLAMA_URL должен содержать адрес HTTP API без пути и учётных данных")
+		}
+		return nil
+	}
+	if err != nil || !isLoopbackURL(parsed) {
+		return errors.New("OLLAMA_URL должен указывать на локальный адрес")
+	}
+	return nil
 }
 
 func isLoopbackURL(target *url.URL) bool {
@@ -117,9 +149,8 @@ type chatResponse struct {
 }
 
 func (c *Client) ListModels(ctx context.Context) ([]string, error) {
-	parsed, _ := url.Parse(c.baseURL)
-	if !isLoopbackURL(parsed) {
-		return nil, errors.New("OLLAMA_URL должен указывать на локальный адрес")
+	if err := c.validateURL(); err != nil {
+		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/tags", nil)
 	if err != nil {
@@ -170,7 +201,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		if family == "bert" || strings.Contains(family, "embed") {
 			continue
 		}
-		result = append(result, ModelPrefix+name)
+		result = append(result, c.modelPrefix()+name)
 	}
 	sort.Strings(result)
 	return result, nil
@@ -221,7 +252,7 @@ func (c *Client) CompleteMessagesModelJSON(ctx context.Context, modelID string, 
 			}
 		}
 	}
-	if !compact || retryReason == "" || settings.MaxTokens >= 2200 {
+	if !compact || retryReason == "" || settings.MaxTokens >= 2200 || c.remote && settings.MaxTokens == 0 {
 		return completion, nil
 	}
 	retrySettings := settings
@@ -246,24 +277,36 @@ func (c *Client) CompleteMessagesModelWithTools(ctx context.Context, modelID str
 }
 
 func (c *Client) complete(ctx context.Context, modelID string, messages []models.ChatMessage, settings models.GenerationSettings, format any, tools []models.ToolDefinition) (models.ModelCompletion, error) {
-	modelID = strings.TrimPrefix(modelID, ModelPrefix)
+	modelID = strings.TrimPrefix(modelID, c.modelPrefix())
 	if strings.Contains(strings.ToLower(modelID), "cloud") {
 		return models.ModelCompletion{}, errors.New("Облачная модель Ollama запрещена для локальной генерации")
 	}
 	if modelID == "" {
 		return models.ModelCompletion{}, errors.New("Не выбрана локальная модель Ollama.")
 	}
-	if err := settings.ValidateLocal(); err != nil {
-		return models.ModelCompletion{}, err
+	var validationErr error
+	if c.remote {
+		validationErr = settings.ValidateRemote()
+	} else {
+		validationErr = settings.ValidateLocal()
+	}
+	if validationErr != nil {
+		return models.ModelCompletion{}, validationErr
 	}
 	contextWindow := settings.ContextWindow
-	if contextWindow == 0 {
+	if contextWindow == 0 && !c.remote {
 		contextWindow = 8192
 	}
-	if settings.MaxTokens >= contextWindow {
+	if contextWindow > 0 && settings.MaxTokens >= contextWindow {
 		return models.ModelCompletion{}, errors.New("Лимит ответа должен быть меньше окна контекста Ollama.")
 	}
-	options := map[string]any{"num_predict": settings.MaxTokens, "num_ctx": contextWindow}
+	options := map[string]any{}
+	if !c.remote || settings.MaxTokens > 0 {
+		options["num_predict"] = settings.MaxTokens
+	}
+	if contextWindow > 0 {
+		options["num_ctx"] = contextWindow
+	}
 	if settings.Temperature != nil {
 		options["temperature"] = *settings.Temperature
 	}
@@ -320,8 +363,8 @@ func (c *Client) complete(ctx context.Context, modelID string, messages []models
 	if err != nil {
 		return models.ModelCompletion{}, err
 	}
-	if parsed, _ := url.Parse(c.baseURL); !isLoopbackURL(parsed) {
-		return models.ModelCompletion{}, errors.New("OLLAMA_URL должен указывать на локальный адрес")
+	if err := c.validateURL(); err != nil {
+		return models.ModelCompletion{}, err
 	}
 	log.Printf("LLM request provider=ollama model=%s endpoint=%s/api/chat messages=%d options=%s think=%t", modelID, c.baseURL, len(messages), mustJSON(options), think)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(encoded))
@@ -371,9 +414,8 @@ func (c *Client) thinkingPreference(ctx context.Context, modelID string) (bool, 
 	if ok {
 		return value, nil
 	}
-	parsed, _ := url.Parse(c.baseURL)
-	if !isLoopbackURL(parsed) {
-		return false, errors.New("OLLAMA_URL должен указывать на локальный адрес")
+	if err := c.validateURL(); err != nil {
+		return false, err
 	}
 	body, err := json.Marshal(showRequest{Model: modelID})
 	if err != nil {

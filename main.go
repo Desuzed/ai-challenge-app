@@ -52,11 +52,18 @@ func main() {
 		ollamaURL = "http://127.0.0.1:11434"
 	}
 	localClient := ollama.New(ollamaURL, 5*time.Minute)
-	client := &llmrouter.Client{DeepSeek: deepSeekClient, Ollama: localClient}
+	var remoteClient *ollama.Client
+	if remoteURL := localSetting("REMOTE_OLLAMA_URL", os.Getenv, os.ReadFile); remoteURL != "" {
+		remoteClient = ollama.NewRemote(remoteURL, 0)
+	}
+	client := &llmrouter.Client{DeepSeek: deepSeekClient, Ollama: localClient, RemoteOllama: remoteClient}
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join(".", "static"))))
 	handler := handlers.New(client)
 	handler.SetLocalModelLister(localClient)
+	if remoteClient != nil {
+		handler.SetRemoteModelLister(remoteClient)
+	}
 	persistentAgent, err := agent.NewPersistent(client, agent.NewJSONStore(agentHistoryFile))
 	if err != nil {
 		log.Fatalf("load agent history: %v", err)

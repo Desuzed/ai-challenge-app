@@ -5,6 +5,26 @@ import (
 	"strings"
 )
 
+const LocalOllamaPrefix = "ollama/"
+const RemoteOllamaPrefix = "ollama-remote/"
+
+func IsRemoteOllamaModel(model string) bool { return strings.HasPrefix(model, RemoteOllamaPrefix) }
+func IsOllamaModel(model string) bool {
+	return strings.HasPrefix(model, LocalOllamaPrefix) || IsRemoteOllamaModel(model)
+}
+func OllamaModelName(model string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(model, LocalOllamaPrefix), RemoteOllamaPrefix)
+}
+
+// ValidateRemote allows unset budgets and leaves the server/model defaults intact.
+func (s GenerationSettings) ValidateRemote() error {
+	if s.MaxTokens < 0 || s.ContextWindow < 0 {
+		return fmt.Errorf("Лимит ответа и окно контекста должны быть положительными или не заданными.")
+	}
+	s.ContextWindow = 0
+	return s.ValidateLocal()
+}
+
 type GenerationSettings struct {
 	Temperature   *float64 `json:"temperature,omitempty"`
 	TopP          *float64 `json:"topP,omitempty"`
@@ -36,6 +56,9 @@ func (s GenerationSettings) ValidateLocal() error {
 // DefaultMaxTokens keeps the main chat's output budget practical per provider.
 // These are application defaults, not provider model limits.
 func DefaultMaxTokens(model string) int {
+	if IsRemoteOllamaModel(model) {
+		return 0
+	}
 	if strings.HasPrefix(model, "ollama/") {
 		return 1024
 	}
@@ -333,7 +356,15 @@ type AgentResponse struct {
 
 // AgentModelsResponse is the safe, key-free catalogue used by the chat UI.
 type AgentModelsResponse struct {
-	Models []string `json:"models"`
+	Models       []string          `json:"models"`
+	Warnings     []string          `json:"warnings,omitempty"`
+	RemoteOllama ModelSourceStatus `json:"remoteOllama"`
+}
+
+// ModelSourceStatus describes a catalogue check, including a reachable empty server.
+type ModelSourceStatus struct {
+	Configured bool `json:"configured"`
+	Available  bool `json:"available"`
 }
 
 // AgentTokenReport makes the cost of carrying a dialogue visible. Values named

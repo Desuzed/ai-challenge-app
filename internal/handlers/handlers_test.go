@@ -604,3 +604,66 @@ func postReasoningJSON(t *testing.T, handler *Handler, body string) *httptest.Re
 	handler.Reasoning(recorder, req)
 	return recorder
 }
+
+type unavailableRemoteLister struct{}
+
+func (unavailableRemoteLister) ListModels(context.Context) ([]string, error) {
+	return nil, errors.New("offline")
+}
+
+func TestRemoteCatalogKeepsLocalModelsAndReportsOffline(t *testing.T) {
+	handler := New(&fakeClient{err: errors.New("cloud unavailable")})
+	handler.SetLocalModelLister(fakeLocalModelLister{"ollama/qwen2.5:3b"})
+	handler.SetRemoteModelLister(fakeLocalModelLister{"ollama-remote/qwen3:4b"})
+	load := func() models.AgentModelsResponse {
+		recorder := httptest.NewRecorder()
+		handler.AgentModels(recorder, httptest.NewRequest(http.MethodGet, "/api/agent/models", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("catalog: %d", recorder.Code)
+		}
+		var response models.AgentModelsResponse
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	response := load()
+	if len(response.Models) != 2 {
+		t.Fatalf("models=%v", response.Models)
+	}
+	handler.SetRemoteModelLister(unavailableRemoteLister{})
+	response = load()
+	if len(response.Models) != 1 || len(response.Warnings) != 1 {
+		t.Fatalf("offline catalog=%#v", response)
+	}
+}
+
+func TestAgentModelsRemoteConnectionStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lister localModelLister
+		want   models.ModelSourceStatus
+	}{
+		{name: "not configured"},
+		{name: "online with models", lister: fakeLocalModelLister{"ollama-remote/qwen2.5:3b"}, want: models.ModelSourceStatus{Configured: true, Available: true}},
+		{name: "online empty catalog", lister: fakeLocalModelLister{}, want: models.ModelSourceStatus{Configured: true, Available: true}},
+		{name: "offline", lister: unavailableRemoteLister{}, want: models.ModelSourceStatus{Configured: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := New(&fakeClient{catalog: []string{models.DeepSeekFlashModel}})
+			handler.SetRemoteModelLister(tc.lister)
+			recorder := httptest.NewRecorder()
+			handler.AgentModels(recorder, httptest.NewRequest(http.MethodGet, "/api/agent/models", nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("catalog: %d", recorder.Code)
+			}
+			var response models.AgentModelsResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.RemoteOllama != tc.want {
+				t.Fatalf("remote status=%+v, want %+v", response.RemoteOllama, tc.want)
+			}
+		})
+	}
+}

@@ -3,7 +3,7 @@ package llmrouter
 
 import (
 	"context"
-	"strings"
+	"errors"
 
 	"ai-challenge-app/internal/deepseek"
 	"ai-challenge-app/internal/models"
@@ -11,11 +11,23 @@ import (
 )
 
 type Client struct {
-	DeepSeek *deepseek.Client
-	Ollama   *ollama.Client
+	DeepSeek     *deepseek.Client
+	Ollama       *ollama.Client
+	RemoteOllama *ollama.Client
 }
 
-func (c *Client) local(model string) bool { return strings.HasPrefix(model, ollama.ModelPrefix) }
+func (c *Client) ollamaClient(model string) (*ollama.Client, error) {
+	if models.IsRemoteOllamaModel(model) {
+		if c.RemoteOllama == nil {
+			return nil, errors.New("Удалённая Ollama не настроена")
+		}
+		return c.RemoteOllama, nil
+	}
+	if c.Ollama == nil {
+		return nil, errors.New("Локальная Ollama не настроена")
+	}
+	return c.Ollama, nil
+}
 func (c *Client) Complete(ctx context.Context, prompt string, mode models.ResponseMode, settings models.GenerationSettings) (string, string, error) {
 	return c.DeepSeek.Complete(ctx, prompt, mode, settings)
 }
@@ -42,20 +54,32 @@ func (c *Client) CompleteMessages(ctx context.Context, messages []models.ChatMes
 	return c.DeepSeek.CompleteMessages(ctx, messages, settings)
 }
 func (c *Client) CompleteMessagesModel(ctx context.Context, model string, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
-	if c.local(model) {
-		return c.Ollama.CompleteMessagesModel(ctx, model, messages, settings)
+	if models.IsOllamaModel(model) {
+		provider, err := c.ollamaClient(model)
+		if err != nil {
+			return models.ModelCompletion{}, err
+		}
+		return provider.CompleteMessagesModel(ctx, model, messages, settings)
 	}
 	return c.DeepSeek.CompleteMessagesModel(ctx, model, messages, settings)
 }
 func (c *Client) CompleteMessagesModelJSON(ctx context.Context, model string, messages []models.ChatMessage, settings models.GenerationSettings) (models.ModelCompletion, error) {
-	if c.local(model) {
-		return c.Ollama.CompleteMessagesModelJSON(ctx, model, messages, settings)
+	if models.IsOllamaModel(model) {
+		provider, err := c.ollamaClient(model)
+		if err != nil {
+			return models.ModelCompletion{}, err
+		}
+		return provider.CompleteMessagesModelJSON(ctx, model, messages, settings)
 	}
 	return c.DeepSeek.CompleteMessagesModelJSON(ctx, model, messages, settings)
 }
 func (c *Client) CompleteMessagesModelWithTools(ctx context.Context, model string, messages []models.ChatMessage, settings models.GenerationSettings, tools []models.ToolDefinition) (models.ModelCompletion, error) {
-	if c.local(model) {
-		return c.Ollama.CompleteMessagesModelWithTools(ctx, model, messages, settings, tools)
+	if models.IsOllamaModel(model) {
+		provider, err := c.ollamaClient(model)
+		if err != nil {
+			return models.ModelCompletion{}, err
+		}
+		return provider.CompleteMessagesModelWithTools(ctx, model, messages, settings, tools)
 	}
 	return c.DeepSeek.CompleteMessagesModelWithTools(ctx, model, messages, settings, tools)
 }

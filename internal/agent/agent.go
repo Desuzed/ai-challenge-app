@@ -296,7 +296,7 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	if err := a.configureLocked(c, recent, strategy, model); err != nil {
 		return models.AgentResponse{}, err
 	}
-	if selectedSettings.MaxTokens != 0 {
+	if selectedSettings.MaxTokens != 0 || models.IsRemoteOllamaModel(c.model) && selectedSettings != (models.GenerationSettings{}) {
 		if err := validateGenerationSettings(selectedSettings, c.model); err != nil {
 			return models.AgentResponse{}, err
 		}
@@ -428,7 +428,7 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	}
 	request := a.requestMessagesForModeLocked(c, u, plannerTurn)
 	if ragEnabled {
-		compactLocal := !toolTurn && strings.HasPrefix(c.model, "ollama/") && c.hasGenerationSettings && c.generationSettings.MaxTokens <= 1024
+		compactLocal := !toolTurn && !models.IsRemoteOllamaModel(c.model) && models.IsOllamaModel(c.model) && c.hasGenerationSettings && c.generationSettings.MaxTokens <= 1024
 		request = addGroundedRAGContext(request, ragResult.Matches, plannerTurn, compactLocal)
 	}
 	skipGroundedCall := ragEnabled && len(ragResult.Matches) == 0 && !plannerTurn && !toolTurn && !isTaskMemoryQuestion(message)
@@ -437,14 +437,14 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		requestForReport = nil
 	}
 	report := a.tokenReportLocked(c, requestForReport, message, models.ModelUsage{})
-	if ragEnabled && !plannerTurn {
+	if ragEnabled && !plannerTurn && !models.IsRemoteOllamaModel(c.model) {
 		reserve := groundedOutputBudget(message)
 		if skipGroundedCall {
 			reserve = 0
 		}
 		report = reserveOutputTokens(report, reserve)
 	}
-	if report.EstimatedRequestTokens+report.ReservedOutputTokens > report.ContextLimitTokens {
+	if report.ContextLimitTokens > 0 && report.EstimatedRequestTokens+report.ReservedOutputTokens > report.ContextLimitTokens {
 		c.setActiveMessagesLocked(previous)
 		c.facts = beforeFacts
 		c.task = previousTask
@@ -492,7 +492,7 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 	}
 	answer := completion.Answer
 	c.lastFinishReason = completion.FinishReason
-	noFinalAnswer := strings.HasPrefix(c.model, "ollama/") && strings.TrimSpace(completion.Answer) == "" && len(completion.ToolCalls) == 0
+	noFinalAnswer := models.IsOllamaModel(c.model) && strings.TrimSpace(completion.Answer) == "" && len(completion.ToolCalls) == 0
 	if noFinalAnswer {
 		answer = "Локальная модель не выдала финальный ответ. Лимит токенов мог уйти на внутреннюю обработку; увеличьте max_tokens и отправьте запрос ещё раз."
 	}
@@ -617,7 +617,7 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		return models.AgentResponse{}, ErrHistorySave
 	}
 	report = a.tokenReportLocked(c, requestForReport, message, completion.Usage)
-	if ragEnabled && !plannerTurn {
+	if ragEnabled && !plannerTurn && !models.IsRemoteOllamaModel(c.model) {
 		reserve := groundedOutputBudget(message)
 		if completion.OutputTokenBudget > 0 {
 			reserve = completion.OutputTokenBudget
@@ -655,12 +655,16 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 }
 
 func validateGenerationSettings(settings models.GenerationSettings, model string) error {
-	if strings.HasPrefix(model, "ollama/") {
+	if models.IsRemoteOllamaModel(model) {
+		if err := settings.ValidateRemote(); err != nil {
+			return err
+		}
+	} else if models.IsOllamaModel(model) {
 		if err := settings.ValidateLocal(); err != nil {
 			return err
 		}
 	}
-	if settings.MaxTokens < 1 || settings.MaxTokens > 8192 || settings.Temperature != nil && (*settings.Temperature < 0 || *settings.Temperature > 2) || settings.TopP != nil && (*settings.TopP <= 0 || *settings.TopP > 1) {
+	if (!models.IsRemoteOllamaModel(model) && (settings.MaxTokens < 1 || settings.MaxTokens > 8192)) || settings.Temperature != nil && (*settings.Temperature < 0 || *settings.Temperature > 2) || settings.TopP != nil && (*settings.TopP <= 0 || *settings.TopP > 1) {
 		return errors.New("Параметры генерации: max tokens 1–8192, temperature 0–2, top_p больше 0 и не больше 1.")
 	}
 	if settings.Temperature != nil && settings.TopP != nil {
@@ -1404,13 +1408,13 @@ func (a *Agent) completeLocked(ctx context.Context, model string, request []mode
 	if customSettings {
 		settings = *selectedSettings
 	}
-	if planner {
+	if planner && !models.IsRemoteOllamaModel(model) {
 		if customSettings {
 			settings.MaxTokens = min(settings.MaxTokens, plannerMaxTokens)
 		} else {
 			settings.MaxTokens = plannerMaxTokens
 		}
-	} else if len(grounded) > 0 && grounded[0] {
+	} else if len(grounded) > 0 && grounded[0] && !models.IsRemoteOllamaModel(model) {
 		budget := groundedOutputBudget(latestUserMessage)
 		if customSettings {
 			settings.MaxTokens = min(settings.MaxTokens, budget)
@@ -1967,6 +1971,9 @@ func (a *Agent) configureLocked(c *conversation, recent int, strategy models.Con
 				settings = c.generationSettings
 			}
 			settings.MaxTokens = models.DefaultMaxTokens(model)
+			if models.IsRemoteOllamaModel(model) {
+				settings.ContextWindow = 0
+			}
 			c.generationSettings = settings
 			c.hasGenerationSettings = true
 		}
@@ -1986,10 +1993,10 @@ func validModel(model string) bool {
 	if model == models.DeepSeekFlashModel || model == models.DeepSeekProModel {
 		return true
 	}
-	if !strings.HasPrefix(model, "ollama/") || len(model) > 120 {
+	if !models.IsOllamaModel(model) || len(model) > 120 {
 		return false
 	}
-	name := strings.TrimPrefix(model, "ollama/")
+	name := models.OllamaModelName(model)
 	if name == "" {
 		return false
 	}
@@ -2079,7 +2086,7 @@ func (a *Agent) tokenReportLocked(c *conversation, request []models.ChatMessage,
 	if c.hasGenerationSettings {
 		reservedOutput = c.generationSettings.MaxTokens
 	}
-	if plannerEnabled(c) {
+	if plannerEnabled(c) && !models.IsRemoteOllamaModel(c.model) {
 		if c.hasGenerationSettings {
 			reservedOutput = min(reservedOutput, plannerMaxTokens)
 		} else {
@@ -2088,12 +2095,18 @@ func (a *Agent) tokenReportLocked(c *conversation, request []models.ChatMessage,
 	}
 	limit := contextLimitTokens
 	note := estimateNote
-	if strings.HasPrefix(c.model, "ollama/") {
+	if models.IsOllamaModel(c.model) {
 		limit = 8192
+		if models.IsRemoteOllamaModel(c.model) {
+			limit = 0
+		}
 		if c.hasGenerationSettings && c.generationSettings.ContextWindow > 0 {
 			limit = c.generationSettings.ContextWindow
 		}
 		note = "Локальная модель Ollama: входные и выходные токены указаны по usage API. Стоимость облачного API — 0; до ответа размер запроса оценивается по символам."
+	}
+	if models.IsRemoteOllamaModel(c.model) && limit == 0 {
+		note = "Удалённая Ollama: контекст и длина ответа по настройкам модели на Windows. Ограничения сервиса пока не заданы. Токены — по usage API; стоимость облачного API — 0."
 	}
 	report := models.AgentTokenReport{HistoryTokens: estimateDialogueHistoryTokens(history), CurrentMessageTokens: estimateMessageTokens(models.ChatMessage{Role: "user", Content: current}), EstimatedRequestTokens: estimateMessagesTokens(request), RequestTokens: usage.InputTokens, ResponseTokens: usage.OutputTokens, ContextLimitTokens: limit, ReservedOutputTokens: reservedOutput, EstimateNote: note, CacheHitTokens: usage.CacheHitTokens, CacheMissTokens: usage.CacheMissTokens}
 	if current == "" {
@@ -2110,11 +2123,11 @@ func (a *Agent) tokenReportLocked(c *conversation, request []models.ChatMessage,
 	for _, item := range c.activeUsagesLocked() {
 		report.CumulativeInputTokens += item.InputTokens
 		report.CumulativeOutputTokens += item.OutputTokens
-		if !strings.HasPrefix(c.model, "ollama/") {
+		if !models.IsOllamaModel(c.model) {
 			report.CumulativeCostUSD += usageCost(item)
 		}
 	}
-	if !strings.HasPrefix(c.model, "ollama/") {
+	if !models.IsOllamaModel(c.model) {
 		report.EstimatedCostUSD = usageCost(usage)
 	}
 	return report
