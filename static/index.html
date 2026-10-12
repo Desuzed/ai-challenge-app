@@ -93,6 +93,7 @@
                 <h2 id="context-title">Параметры</h2>
                 <button id="close-context-settings" class="icon-button" type="button" aria-label="Закрыть параметры">×</button>
               </div>
+              <p id="context-settings-status" class="status error" role="alert" hidden></p>
               <label for="context-strategy">Стратегия
                 <select id="context-strategy">
                   <option value="sliding_window">Sliding Window</option>
@@ -110,7 +111,16 @@
                 <label for="generation-max-tokens">Лимит ответа (токены)
                   <input id="generation-max-tokens" type="number" min="1" max="8192" step="1" value="512">
                 </label>
-                <p class="hint">При смене модели лимит автоматически становится 2048 токенов для DeepSeek или 1024 для локальной Ollama; его можно вручную изменить. Остальные параметры сохраняются. Если указан top_p, temperature не отправляется. Контекст локальной Ollama ограничен 8192 токенами.</p>
+                <p class="hint">При смене модели лимит автоматически становится 2048 токенов для DeepSeek или 1024 для локальной Ollama; его можно вручную изменить. Если указан top_p, temperature не отправляется.</p>
+                <div id="generation-local-settings" hidden>
+                  <label for="generation-context-window">Окно контекста (токены)<input id="generation-context-window" type="number" min="512" max="32768" step="1" value="8192"></label>
+                  <label for="generation-top-k">Top K (необязательно)<input id="generation-top-k" type="number" min="1" max="1000" step="1" placeholder="по умолчанию модели"></label>
+                  <label for="generation-seed">Seed (необязательно)<input id="generation-seed" type="number" min="-2147483648" max="2147483647" step="1" placeholder="по умолчанию модели"></label>
+                  <label for="generation-repeat-penalty">Штраф за повторы (необязательно)<input id="generation-repeat-penalty" type="number" min="0" max="2" step="0.05" placeholder="по умолчанию модели"></label>
+                  <label for="generation-local-think">Рассуждения<select id="generation-local-think"><option value="auto">По метаданным модели</option><option value="off">Выключить</option><option value="on">Включить</option></select></label>
+                  <label for="generation-local-json"><input id="generation-local-json" type="checkbox"> Ответ в JSON</label>
+                  <p class="hint">Дополнительные параметры выбранной локальной модели. Лимит ответа должен быть меньше окна контекста. JSON применяется к ответам без инструментов; RAG использует свою схему. Prompt настраивается через профили агента.</p>
+                </div>
               </details>
               <label for="recent-messages">Последних сообщений (N)
                 <input id="recent-messages" type="number" min="2" max="40" value="32" inputmode="numeric">
