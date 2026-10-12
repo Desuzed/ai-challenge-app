@@ -1,11 +1,36 @@
 package models
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type GenerationSettings struct {
-	Temperature *float64 `json:"temperature,omitempty"`
-	TopP        *float64 `json:"topP,omitempty"`
-	MaxTokens   int      `json:"maxTokens"`
+	Temperature   *float64 `json:"temperature,omitempty"`
+	TopP          *float64 `json:"topP,omitempty"`
+	MaxTokens     int      `json:"maxTokens"`
+	ContextWindow int      `json:"contextWindow,omitempty"`
+	LocalJSON     bool     `json:"localJson,omitempty"`
+	LocalThink    *bool    `json:"localThink,omitempty"`
+	TopK          *int     `json:"topK,omitempty"`
+	Seed          *int64   `json:"seed,omitempty"`
+	RepeatPenalty *float64 `json:"repeatPenalty,omitempty"`
+}
+
+func (s GenerationSettings) ValidateLocal() error {
+	if s.ContextWindow != 0 && (s.ContextWindow < 512 || s.ContextWindow > 32768) {
+		return fmt.Errorf("Окно контекста: 512–32768 токенов.")
+	}
+	if s.TopK != nil && (*s.TopK < 1 || *s.TopK > 1000) {
+		return fmt.Errorf("Top K: целое число 1–1000.")
+	}
+	if s.Seed != nil && (*s.Seed < -2147483648 || *s.Seed > 2147483647) {
+		return fmt.Errorf("Seed: целое число от -2147483648 до 2147483647.")
+	}
+	if s.RepeatPenalty != nil && (*s.RepeatPenalty < 0 || *s.RepeatPenalty > 2) {
+		return fmt.Errorf("Штраф за повторы: 0–2.")
+	}
+	return nil
 }
 
 // DefaultMaxTokens keeps the main chat's output budget practical per provider.
@@ -274,6 +299,7 @@ type TaskState struct {
 }
 
 type AgentResponse struct {
+	LocalMetrics        *LocalMetrics            `json:"localMetrics,omitempty"`
 	Answer              string                   `json:"answer"`
 	FinishReason        string                   `json:"finishReason,omitempty"`
 	RAGEnabled          bool                     `json:"ragEnabled,omitempty"`
@@ -506,6 +532,7 @@ type ModelUsage struct {
 }
 
 type ModelCompletion struct {
+	LocalMetrics   *LocalMetrics
 	Answer         string
 	FinishReason   string
 	Usage          ModelUsage
@@ -516,6 +543,15 @@ type ModelCompletion struct {
 	OutputTokenBudget     int
 	CompletionAttempts    int
 	CompletionRetryReason string
+}
+
+// LocalMetrics contains Ollama API timings and output-token throughput.
+type LocalMetrics struct {
+	TotalMS         float64 `json:"totalMs"`
+	LoadMS          float64 `json:"loadMs"`
+	PromptMS        float64 `json:"promptMs"`
+	GenerationMS    float64 `json:"generationMs"`
+	TokensPerSecond float64 `json:"tokensPerSecond"`
 }
 
 type ToolExecution struct {
