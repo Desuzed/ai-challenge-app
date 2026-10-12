@@ -66,6 +66,7 @@ type Handler struct {
 	reasoningClient     reasoningCompleter
 	modelVersionsClient modelVersionsCompleter
 	localModelLister    localModelLister
+	remoteModelLister   localModelLister
 	openRouterClient    openRouterCompleter
 	tokenDemoClient     tokenDemoCompleter
 	agent               *agent.Agent
@@ -73,6 +74,7 @@ type Handler struct {
 
 func (h *Handler) SetOpenRouterClient(client openRouterCompleter) { h.openRouterClient = client }
 func (h *Handler) SetLocalModelLister(client localModelLister)    { h.localModelLister = client }
+func (h *Handler) SetRemoteModelLister(client localModelLister)   { h.remoteModelLister = client }
 func (h *Handler) SetAgent(value *agent.Agent)                    { h.agent = value }
 
 func New(client completer) *Handler {
@@ -420,10 +422,16 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestTimeout := agentTimeout
-	if strings.HasPrefix(input.Model, "ollama/") {
+	if models.IsRemoteOllamaModel(input.Model) {
+		requestTimeout = 0
+	} else if models.IsOllamaModel(input.Model) {
 		requestTimeout = 6 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
+	if requestTimeout > 0 {
+		cancel()
+		ctx, cancel = context.WithTimeout(r.Context(), requestTimeout)
+	}
 	defer cancel()
 	result, err := h.agent.RespondWithUserOptionsRAGConfiguredSettings(ctx, userID, sessionID, input.Message, input.RecentMessages, input.Strategy, input.Model, input.RAGEnabled, input.RAGOptions, input.Settings)
 	if err != nil {
@@ -469,14 +477,14 @@ func (h *Handler) AgentModels(w http.ResponseWriter, r *http.Request) {
 		writeAgentError(w, http.StatusMethodNotAllowed, "Используйте GET-запрос.")
 		return
 	}
-	if h.modelVersionsClient == nil && h.localModelLister == nil {
+	if h.modelVersionsClient == nil && h.localModelLister == nil && h.remoteModelLister == nil {
 		writeAgentError(w, http.StatusServiceUnavailable, "Список моделей сейчас недоступен.")
 		return
 	}
 	result := make([]string, 0, 4)
 	var deepSeekErr error
-	var deepSeekModels, localModels []string
-	var deepSeekLoadErr, localLoadErr error
+	var deepSeekModels, localModels, remoteModels []string
+	var deepSeekLoadErr, localLoadErr, remoteLoadErr error
 	var wg sync.WaitGroup
 	if h.modelVersionsClient != nil {
 		wg.Add(1)
@@ -496,6 +504,15 @@ func (h *Handler) AgentModels(w http.ResponseWriter, r *http.Request) {
 			localModels, localLoadErr = h.localModelLister.ListModels(ctx)
 		}()
 	}
+	if h.remoteModelLister != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			remoteModels, remoteLoadErr = h.remoteModelLister.ListModels(ctx)
+		}()
+	}
 	wg.Wait()
 	deepSeekErr = deepSeekLoadErr
 	if deepSeekLoadErr == nil {
@@ -509,13 +526,26 @@ func (h *Handler) AgentModels(w http.ResponseWriter, r *http.Request) {
 	if localLoadErr == nil {
 		result = append(result, localModels...)
 	}
-	if len(result) == 0 && deepSeekErr != nil && h.localModelLister == nil {
+	if remoteLoadErr == nil {
+		result = append(result, remoteModels...)
+	}
+	if len(result) == 0 && deepSeekErr != nil && h.localModelLister == nil && h.remoteModelLister == nil {
 		status, message := errorResponse(deepSeekErr)
 		writeAgentError(w, status, message)
 		return
 	}
 	sort.Strings(result)
-	writeJSON(w, http.StatusOK, models.AgentModelsResponse{Models: result})
+	response := models.AgentModelsResponse{
+		Models: result,
+		RemoteOllama: models.ModelSourceStatus{
+			Configured: h.remoteModelLister != nil,
+			Available:  h.remoteModelLister != nil && remoteLoadErr == nil,
+		},
+	}
+	if remoteLoadErr != nil {
+		response.Warnings = append(response.Warnings, "Удалённая Ollama недоступна. Проверьте Windows-ПК и сетевое подключение.")
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func agentSessionID(w http.ResponseWriter, r *http.Request) (string, error) {

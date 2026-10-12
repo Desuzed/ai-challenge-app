@@ -197,6 +197,17 @@ button:disabled { cursor: wait; opacity: .7; }
 .task-phases .task-chip-current { border-color: #315edb; background: #edf3ff; color: #234cb9; font-weight: 700; }
 .icon-button { margin: 0; padding: 0; width: 32px; height: 32px; border: 0; background: transparent; color: #526174; font-size: 1.5rem; line-height: 1; }
 .icon-button:hover { background: #edf3ff; color: #315edb; }
+.dialog-actions, .model-picker-button { display: inline-flex; align-items: center; gap: 10px; }
+.remote-connection { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
+.remote-connection strong { font-size: .88rem; }
+.remote-connection .hint { margin-top: 4px; }
+.connection-dot { display: inline-block; flex: 0 0 10px; width: 10px; height: 10px; border-radius: 50%; background: #8995a5; }
+.connection-dot[data-state="available"] { background: #168443; }
+.connection-dot[data-state="unavailable"] { background: #d92d20; }
+#refresh-models { display: grid; place-items: center; }
+#refresh-models[aria-busy="true"] svg { animation: refresh-spin 1s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { #refresh-models[aria-busy="true"] svg { animation: none; } }
 
 .hint, .status { margin: 0; color: #526174; font-size: .88rem; }
 .error { color: #b42318; }

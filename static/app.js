@@ -12,6 +12,10 @@ const agentHistory = document.querySelector('#agent-history');
 const clearAgentHistory = document.querySelector('#clear-agent-history');
 const openContextSettings = document.querySelector('#open-context-settings');
 const openModelPicker = document.querySelector('#open-model-picker');
+const modelPickerLabel = document.querySelector('#model-picker-label');
+const refreshModels = document.querySelector('#refresh-models');
+const remoteModelStatus = document.querySelector('#remote-model-status');
+const remoteModelDots = [document.querySelector('#remote-model-dot'), document.querySelector('#remote-model-dialog-dot')];
 const modelPickerDialog = document.querySelector('#model-picker-dialog');
 const closeModelPicker = document.querySelector('#close-model-picker');
 const contextSettingsDialog = document.querySelector('#context-settings-dialog');
@@ -79,6 +83,8 @@ const mcpResult = document.querySelector('#mcp-result');
 
 let selectedAgentModel = 'deepseek-flash';
 let modelCatalogReady = false;
+let modelCatalogRequest = null;
+let initialAgentHistory = null;
 let generationSettingsDirty = false;
 let generationSettingsRevision = 0;
 let modelSelectionRevision = 0;
@@ -124,7 +130,8 @@ contextSettingsDialog.addEventListener('cancel', (event) => {
   event.preventDefault();
   closeContextSettingsAfterSave();
 });
-openModelPicker.addEventListener('click', () => modelPickerDialog.showModal());
+openModelPicker.addEventListener('click', () => { modelPickerDialog.showModal(); loadAgentModels(); });
+refreshModels.addEventListener('click', () => loadAgentModels());
 closeModelPicker.addEventListener('click', () => modelPickerDialog.close());
 modelPickerDialog.addEventListener('close', () => openModelPicker.focus());
 
@@ -142,15 +149,35 @@ function setStatus(text, isError = false) {
     if (isError && text) contextSettingsStatus.scrollIntoView({ block: 'nearest' });
   }
 }
+function isRemoteOllamaModel(model) { return model.startsWith('ollama-remote/'); }
+function isOllamaModel(model) { return model.startsWith('ollama/') || isRemoteOllamaModel(model); }
 function modelLabel(model) {
   if (model === 'deepseek-flash') return 'DeepSeek Flash';
   if (model === 'deepseek-v4-pro') return 'DeepSeek V4 Pro';
-  return model.startsWith('ollama/') ? model.slice('ollama/'.length) : model;
+  return isOllamaModel(model) ? model.slice(model.indexOf('/') + 1) : model;
 }
-function modelProvider(model) { return model.startsWith('ollama/') ? 'Локальные' : 'DeepSeek'; }
+function modelProvider(model) { return isRemoteOllamaModel(model) ? 'Удалённые' : model.startsWith('ollama/') ? 'Локальные' : 'DeepSeek'; }
+// Keep an explicitly selected private model when its server is offline.
+// Refreshing the catalogue must never silently change the provider to cloud.
+function preserveUnavailableOllamaModel(model) {
+  if (!isOllamaModel(model) || [...agentModel.options].some((option) => option.value === model)) return;
+  const label = modelProvider(model);
+  let group = [...agentModel.children].find((item) => item.tagName === 'OPTGROUP' && item.label === label);
+  if (!group) { group = document.createElement('optgroup'); group.label = label; agentModel.append(group); }
+  const option = document.createElement('option');
+  option.value = model; option.textContent = `${modelLabel(model)} · недоступна`; option.disabled = true;
+  group.append(option);
+}
 function updateModelPickerLabel() {
-  openModelPicker.textContent = `Модель: ${modelProvider(selectedAgentModel)} · ${modelLabel(selectedAgentModel)}`;
-  generationLocalSettings.hidden = !selectedAgentModel.startsWith('ollama/');
+  modelPickerLabel.textContent = `Модель: ${modelProvider(selectedAgentModel)} · ${modelLabel(selectedAgentModel)}`;
+  generationLocalSettings.hidden = !isOllamaModel(selectedAgentModel);
+  const remote = isRemoteOllamaModel(selectedAgentModel);
+  for (const input of [generationMaxTokens, generationContextWindow]) {
+    input.placeholder = remote ? 'по умолчанию модели на сервере' : '';
+    if (remote) input.removeAttribute('max');
+    else input.max = input === generationMaxTokens ? '8192' : '32768';
+  }
+  generationContextWindow.min = remote ? '1' : '512';
 }
 
 async function readJSONResponse(response, operation) {
@@ -392,6 +419,7 @@ function renderContextState(payload, { preserveRecentMessages = false, preserveM
   if (payload.strategy && strategyDescriptions[payload.strategy]) contextStrategy.value = payload.strategy;
   if (payload.recentMessages && !preserveRecentMessages) recentMessages.value = payload.recentMessages;
   if (payload.model && !preserveModelSelection) {
+    preserveUnavailableOllamaModel(payload.model);
     const available = [...agentModel.options].some((option) => option.value === payload.model);
     if (!modelCatalogReady || available) selectedAgentModel = payload.model;
     if ([...agentModel.options].some((option) => option.value === selectedAgentModel)) agentModel.value = selectedAgentModel;
@@ -405,8 +433,8 @@ function renderContextState(payload, { preserveRecentMessages = false, preserveM
     );
     generationTemperature.value = payload.settings.temperature ?? '';
     generationTopP.value = payload.settings.topP ?? '';
-    if (payload.settings.maxTokens) generationMaxTokens.value = payload.settings.maxTokens;
-    generationContextWindow.value = payload.settings.contextWindow || 8192;
+    generationMaxTokens.value = payload.settings.maxTokens || (isRemoteOllamaModel(selectedAgentModel) ? '' : 512);
+    generationContextWindow.value = payload.settings.contextWindow || (isRemoteOllamaModel(selectedAgentModel) ? '' : 8192);
     generationTopK.value = payload.settings.topK ?? '';
     generationSeed.value = payload.settings.seed ?? '';
     generationRepeatPenalty.value = payload.settings.repeatPenalty ?? '';
@@ -474,19 +502,21 @@ async function patchAgent(command, fallback) {
 }
 
 function readGenerationSettings() {
+  const remote = isRemoteOllamaModel(selectedAgentModel);
   const maxTokens = Number(generationMaxTokens.value);
+  const emptyMaxTokens = remote && generationMaxTokens.value === '';
   const topP = generationTopP.value === '' ? null : Number(generationTopP.value);
   const temperature = generationTemperature.value === '' ? null : Number(generationTemperature.value);
-  if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192 || topP !== null && (!Number.isFinite(topP) || topP <= 0 || topP > 1) || topP === null && (temperature === null || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+  if (!Number.isInteger(maxTokens) || (!emptyMaxTokens && maxTokens < 1) || (!remote && maxTokens > 8192) || topP !== null && (!Number.isFinite(topP) || topP <= 0 || topP > 1) || topP === null && (temperature === null || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
     throw new Error('Проверьте параметры генерации: temperature 0–2 или top_p больше 0 и не больше 1; лимит ответа 1–8192.');
   }
   const settings = { ...savedLocalGenerationSettings, maxTokens };
   if (topP !== null) settings.topP = topP;
   else settings.temperature = temperature;
-  if (!selectedAgentModel.startsWith('ollama/')) return settings;
+  if (!isOllamaModel(selectedAgentModel)) return settings;
   const contextWindow = Number(generationContextWindow.value);
-  if (!Number.isInteger(contextWindow) || contextWindow < 512 || contextWindow > 32768) throw new Error('Окно контекста: целое число от 512 до 32768 токенов. Параметры не сохранены.');
-  if (maxTokens >= contextWindow) throw new Error(`Лимит ответа (${maxTokens}) должен быть меньше окна контекста (${contextWindow}). Уменьшите лимит ответа или увеличьте окно. Параметры не сохранены.`);
+  if (!Number.isInteger(contextWindow) || (remote ? contextWindow < 0 || generationContextWindow.value !== '' && contextWindow < 1 : contextWindow < 512 || contextWindow > 32768)) throw new Error(remote ? 'Окно контекста: положительное целое число или пустое поле для настроек сервера.' : 'Окно контекста: целое число от 512 до 32768 токенов. Параметры не сохранены.');
+  if (contextWindow > 0 && maxTokens >= contextWindow) throw new Error(`Лимит ответа (${maxTokens}) должен быть меньше окна контекста (${contextWindow}). Уменьшите лимит ответа или увеличьте окно. Параметры не сохранены.`);
   settings.contextWindow = contextWindow;
   settings.localJson = generationLocalJSON.checked;
   delete settings.topK;
@@ -738,23 +768,59 @@ togglePlanner.addEventListener('click', async () => {
   } catch (error) { setStatus(readableFetchError(error, 'Не удалось изменить режим планировщика.'), true); }
 });
 
-async function loadAgentModels() {
+function setRemoteModelStatus(state, message) {
+  remoteModelStatus.textContent = message;
+  for (const dot of remoteModelDots) {
+    dot.dataset.state = state;
+    dot.title = `Windows: ${message}`;
+    if (dot.getAttribute('role') === 'img') dot.setAttribute('aria-label', dot.title);
+  }
+}
+
+function loadAgentModels() {
+  if (modelCatalogRequest) return modelCatalogRequest;
+  refreshModels.disabled = true;
+  refreshModels.setAttribute('aria-busy', 'true');
+  setRemoteModelStatus('checking', 'Проверка подключения…');
+  modelCatalogRequest = fetchAgentModels().finally(() => {
+    modelCatalogRequest = null;
+    refreshModels.disabled = false;
+    refreshModels.setAttribute('aria-busy', 'false');
+  });
+  return modelCatalogRequest;
+}
+
+async function fetchAgentModels() {
+  let connectionChecked = false;
   try {
     const response = await fetch('/api/agent/models', { cache: 'no-store' });
     const payload = await readAgentResponse(response);
     if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить список моделей.');
+    const remote = payload.remoteOllama;
+    if (!remote || typeof remote.configured !== 'boolean' || typeof remote.available !== 'boolean') {
+      throw new Error('Обновите backend: в ответе отсутствует статус удалённой Ollama.');
+    }
+    const remoteCount = (payload.models || []).filter(isRemoteOllamaModel).length;
+    setRemoteModelStatus(remote.available ? 'available' : 'unavailable',
+      !remote.configured ? 'Подключение не настроено' : !remote.available ? 'Недоступна · проверьте ПК и сеть' : remoteCount ? 'Подключена · модели доступны' : 'Подключена · чат-модели не установлены');
+    connectionChecked = true;
+    // Restore the saved provider before a partial catalogue can pick a default.
+    await initialAgentHistory;
     agentModel.replaceChildren();
     const deepSeekGroup = document.createElement('optgroup'); deepSeekGroup.label = 'DeepSeek';
     const localGroup = document.createElement('optgroup'); localGroup.label = 'Локальные';
+    const remoteGroup = document.createElement('optgroup'); remoteGroup.label = 'Удалённые';
     (payload.models || []).forEach((model) => {
       const option = document.createElement('option'); option.value = model; option.textContent = modelLabel(model);
-      (model.startsWith('ollama/') ? localGroup : deepSeekGroup).append(option);
+      (isRemoteOllamaModel(model) ? remoteGroup : model.startsWith('ollama/') ? localGroup : deepSeekGroup).append(option);
     });
     if (deepSeekGroup.children.length) agentModel.append(deepSeekGroup);
     if (localGroup.children.length) agentModel.append(localGroup);
+    if (remoteGroup.children.length) agentModel.append(remoteGroup);
     modelCatalogReady = true;
-    if (!agentModel.options.length) { modelDescription.textContent = 'Нет доступных моделей. Запустите Ollama или настройте ключ DeepSeek.'; return; }
     const previousModel = selectedAgentModel;
+    preserveUnavailableOllamaModel(selectedAgentModel);
+    if (!agentModel.options.length) { agentModel.disabled = true; modelDescription.textContent = 'Нет доступных моделей. Запустите Ollama или настройте ключ DeepSeek.'; return; }
     if (![...agentModel.options].some((option) => option.value === selectedAgentModel)) selectedAgentModel = agentModel.options[0].value;
     agentModel.value = selectedAgentModel; agentModel.disabled = false;
     updateModelPickerLabel();
@@ -762,9 +828,14 @@ async function loadAgentModels() {
       modelSelectionRevision++;
       await patchAgent({ action: 'set_model', model: selectedAgentModel }, 'Не удалось выбрать доступную модель.');
     }
-    const hasLocal = [...agentModel.options].some((option) => option.value.startsWith('ollama/'));
-    modelDescription.textContent = hasLocal ? 'Выбор применяется к следующему сообщению. Локальные модели обрабатывают запросы через Ollama.' : 'Локальная Ollama не обнаружена; доступны только модели DeepSeek.';
-  } catch (error) { modelDescription.textContent = readableFetchError(error, 'Не удалось загрузить список моделей.'); }
+    const hasLocal = (payload.models || []).some((model) => model.startsWith('ollama/'));
+    const hasRemote = remoteCount > 0;
+    const description = hasRemote ? 'Локальные модели работают на Mac, удалённые — на Windows-ПК. Выбор применяется к следующему сообщению.' : hasLocal ? 'Выбор применяется к следующему сообщению. Локальные модели обрабатывают запросы через Ollama.' : 'Ollama не обнаружена; доступны только модели DeepSeek.';
+    modelDescription.textContent = [description, ...(payload.warnings || [])].join(' ');
+  } catch (error) {
+    if (!connectionChecked) setRemoteModelStatus('unavailable', 'Не удалось проверить подключение');
+    modelDescription.textContent = readableFetchError(error, 'Не удалось загрузить список моделей.');
+  }
 }
 agentModel.addEventListener('change', async () => {
   const previous = selectedAgentModel; const next = agentModel.value; agentModel.disabled = true; modelSelectionRevision++;
@@ -911,7 +982,8 @@ agentForm.addEventListener('submit', async (event) => {
       httpStatus: response.status,
       provider: modelProvider(responseModel),
       model: modelLabel(responseModel),
-      localRequest: responseModel.startsWith('ollama/'),
+      localRequest: isOllamaModel(responseModel),
+      remoteRequest: isRemoteOllamaModel(responseModel),
       finishReason: payload.finishReason || '',
       localMetrics: payload.localMetrics || null,
       requestedSettings: settings,
@@ -951,5 +1023,6 @@ agentForm.addEventListener('submit', async (event) => {
 });
 
 renderTask({});
-loadAgentModels().finally(() => loadAgentHistory());
+initialAgentHistory = loadAgentHistory();
+loadAgentModels();
 loadMCP();

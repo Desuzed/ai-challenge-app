@@ -30,3 +30,29 @@ func TestLocalModelIDNeverNeedsDeepSeekKey(t *testing.T) {
 		t.Fatalf("local completion = %#v, %v", result, err)
 	}
 }
+
+func TestSameModelOnTwoServersRoutesByProvider(t *testing.T) {
+	makeServer := func(label string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/show" {
+				_, _ = w.Write([]byte(`{"thinking":{"default":false}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"message":{"content":"` + label + `"},"done":true,"done_reason":"stop"}`))
+		}))
+	}
+	local, remote := makeServer("mac"), makeServer("windows")
+	defer local.Close()
+	defer remote.Close()
+	client := &Client{Ollama: ollama.New(local.URL, time.Second), RemoteOllama: ollama.NewRemote(remote.URL, time.Second)}
+	for _, item := range []struct{ model, want string }{{"ollama/qwen3:4b", "mac"}, {"ollama-remote/qwen3:4b", "windows"}} {
+		result, err := client.CompleteMessagesModel(context.Background(), item.model, nil, models.GenerationSettings{MaxTokens: 8})
+		if err != nil || result.Answer != item.want {
+			t.Fatalf("%s => %#v %v", item.model, result, err)
+		}
+	}
+	client.RemoteOllama = nil
+	if _, err := client.CompleteMessagesModel(context.Background(), "ollama-remote/qwen3:4b", nil, models.GenerationSettings{}); err == nil {
+		t.Fatal("missing remote provider fell through")
+	}
+}
