@@ -134,6 +134,7 @@ dialog { border: 0; border-radius: 12px; padding: 0; box-shadow: 0 18px 60px #18
 dialog::backdrop { background: #18212f66; }
 .dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dialog-close { justify-self: start; }
+#context-settings-status { position: sticky; top: 0; z-index: 1; padding: 10px; border: 1px solid #e4a29a; border-radius: 8px; background: #fff1f0; overflow-wrap: anywhere; }
 .parameter-section { padding: 12px; border: 1px solid #dfe7f2; border-radius: 8px; background: #f8faff; }
 .parameter-section summary { color: #395577; font-weight: 700; }
 .parameter-section[open] summary { margin-bottom: 10px; }
