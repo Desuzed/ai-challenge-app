@@ -131,3 +131,73 @@ func TestLocalClientRejectsRemoteBaseURL(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestLocalOptionsAndMetricsReachOllama(t *testing.T) {
+	var request chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			_, _ = w.Write([]byte(`{"thinking":{"values":[true,false],"default":true}}`))
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"{}"},"done":true,"done_reason":"stop","prompt_eval_count":20,"eval_count":10,"total_duration":2000000000,"load_duration":500000000,"prompt_eval_duration":500000000,"eval_duration":1000000000}`))
+	}))
+	defer server.Close()
+	topK, seed, penalty, think, topP := 15, int64(0), 1.2, false, 0.8
+	result, err := New(server.URL, time.Second).CompleteMessagesModel(context.Background(), "ollama/qwen3:4b", []models.ChatMessage{{Role: "user", Content: "Верни JSON"}}, models.GenerationSettings{MaxTokens: 256, ContextWindow: 4096, TopK: &topK, Seed: &seed, RepeatPenalty: &penalty, LocalThink: &think, LocalJSON: true, TopP: &topP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]float64{"num_predict": 256, "num_ctx": 4096, "top_k": 15, "seed": 0, "repeat_penalty": 1.2, "top_p": 0.8}
+	for key, value := range expected {
+		if request.Options[key] != value {
+			t.Fatalf("%s = %v, want %v", key, request.Options[key], value)
+		}
+	}
+	if _, exists := request.Options["temperature"]; exists {
+		t.Fatal("unset temperature sent")
+	}
+	if request.Think || request.Format != "json" {
+		t.Fatalf("request = %#v", request)
+	}
+	if result.LocalMetrics == nil || result.LocalMetrics.TotalMS != 2000 || result.LocalMetrics.TokensPerSecond != 10 {
+		t.Fatalf("metrics = %#v", result.LocalMetrics)
+	}
+}
+
+func TestInvalidLocalOptionsDoNotSendRequest(t *testing.T) {
+	topK, seed, penalty := 0, int64(2147483648), -1.0
+	cases := []models.GenerationSettings{{MaxTokens: 256, TopK: &topK}, {MaxTokens: 256, Seed: &seed}, {MaxTokens: 256, RepeatPenalty: &penalty}, {MaxTokens: 2048, ContextWindow: 2048}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("invalid options reached Ollama") }))
+	defer server.Close()
+	for _, settings := range cases {
+		if _, err := New(server.URL, time.Second).CompleteMessagesModel(context.Background(), "ollama/qwen3:4b", nil, settings); err == nil {
+			t.Fatalf("accepted invalid settings: %#v", settings)
+		}
+	}
+}
+
+func TestSmallContextWindowIsSentToOllama(t *testing.T) {
+	var request chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" {
+			_, _ = w.Write([]byte(`{"thinking":{"values":[true,false],"default":true}}`))
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"Ответ"},"done_reason":"stop"}`))
+	}))
+	defer server.Close()
+	_, err := New(server.URL, time.Second).CompleteMessagesModel(context.Background(), "ollama/qwen3:4b", []models.ChatMessage{{Role: "user", Content: "Привет"}}, models.GenerationSettings{MaxTokens: 1024, ContextWindow: 1536})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Options["num_ctx"] != float64(1536) || request.Options["num_predict"] != float64(1024) {
+		t.Fatalf("small context request = %#v", request.Options)
+	}
+}

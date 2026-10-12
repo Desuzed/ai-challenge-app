@@ -93,8 +93,12 @@ type toolCall struct {
 }
 
 type chatResponse struct {
-	Model   string `json:"model"`
-	Message struct {
+	TotalDuration  int64  `json:"total_duration"`
+	LoadDuration   int64  `json:"load_duration"`
+	PromptDuration int64  `json:"prompt_eval_duration"`
+	EvalDuration   int64  `json:"eval_duration"`
+	Model          string `json:"model"`
+	Message        struct {
 		Content   string `json:"content"`
 		Thinking  string `json:"thinking"`
 		ToolCalls []struct {
@@ -249,12 +253,31 @@ func (c *Client) complete(ctx context.Context, modelID string, messages []models
 	if modelID == "" {
 		return models.ModelCompletion{}, errors.New("Не выбрана локальная модель Ollama.")
 	}
-	options := map[string]any{"num_predict": settings.MaxTokens, "num_ctx": 8192}
+	if err := settings.ValidateLocal(); err != nil {
+		return models.ModelCompletion{}, err
+	}
+	contextWindow := settings.ContextWindow
+	if contextWindow == 0 {
+		contextWindow = 8192
+	}
+	if settings.MaxTokens >= contextWindow {
+		return models.ModelCompletion{}, errors.New("Лимит ответа должен быть меньше окна контекста Ollama.")
+	}
+	options := map[string]any{"num_predict": settings.MaxTokens, "num_ctx": contextWindow}
 	if settings.Temperature != nil {
 		options["temperature"] = *settings.Temperature
 	}
 	if settings.TopP != nil {
 		options["top_p"] = *settings.TopP
+	}
+	if settings.TopK != nil {
+		options["top_k"] = *settings.TopK
+	}
+	if settings.Seed != nil {
+		options["seed"] = *settings.Seed
+	}
+	if settings.RepeatPenalty != nil {
+		options["repeat_penalty"] = *settings.RepeatPenalty
 	}
 	think, err := c.thinkingPreference(ctx, modelID)
 	if err != nil {
@@ -267,6 +290,12 @@ func (c *Client) complete(ctx context.Context, modelID string, messages []models
 	// Keep ordinary chat/tool reasoning policy and original messages intact.
 	if format != nil && format != "" && strings.HasPrefix(strings.ToLower(modelID), "qwen3") {
 		think = false
+	}
+	if _, grounded := format.(map[string]any); !grounded && settings.LocalThink != nil {
+		think = *settings.LocalThink
+	}
+	if (format == nil || format == "") && len(tools) == 0 && settings.LocalJSON {
+		format = "json"
 	}
 	if format == "" {
 		format = nil
@@ -316,6 +345,10 @@ func (c *Client) complete(ctx context.Context, modelID string, messages []models
 		return models.ModelCompletion{}, fmt.Errorf("разобрать ответ Ollama: %w", err)
 	}
 	completion := models.ModelCompletion{Answer: result.Message.Content, FinishReason: result.DoneReason, Usage: models.ModelUsage{InputTokens: result.PromptEval, OutputTokens: result.Eval, TotalTokens: result.PromptEval + result.Eval}}
+	completion.LocalMetrics = &models.LocalMetrics{TotalMS: float64(result.TotalDuration) / 1e6, LoadMS: float64(result.LoadDuration) / 1e6, PromptMS: float64(result.PromptDuration) / 1e6, GenerationMS: float64(result.EvalDuration) / 1e6}
+	if result.EvalDuration > 0 {
+		completion.LocalMetrics.TokensPerSecond = float64(result.Eval) * 1e9 / float64(result.EvalDuration)
+	}
 	for index, call := range result.Message.ToolCalls {
 		args, _ := json.Marshal(call.Function.Arguments)
 		id := call.ID

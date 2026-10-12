@@ -134,3 +134,42 @@ func TestRequestControls(t *testing.T) {
 		t.Fatalf("all controls are invalid: %#v %#v %d", format, stop, tokens)
 	}
 }
+
+func TestCloudRequestPreservesCommonSettingsAndOmitsLocalOptions(t *testing.T) {
+	temperature, topP, topK, seed, penalty, think := 0.35, 0.9, 20, int64(42), 1.2, true
+	for _, settings := range []models.GenerationSettings{
+		{Temperature: &temperature, MaxTokens: 3000},
+		{TopP: &topP, MaxTokens: 3000},
+	} {
+		settings.ContextWindow, settings.TopK, settings.Seed = 2048, &topK, &seed
+		settings.RepeatPenalty, settings.LocalJSON, settings.LocalThink = &penalty, true, &think
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if string(body["max_tokens"]) != "3000" || string(body["model"]) != `"deepseek-flash"` {
+				t.Fatalf("cloud budget/model changed: %s", body)
+			}
+			if settings.TopP != nil {
+				if string(body["top_p"]) != "0.9" || body["temperature"] != nil {
+					t.Fatalf("top_p mode changed: %s", body)
+				}
+			} else if string(body["temperature"]) != "0.35" || body["top_p"] != nil {
+				t.Fatalf("temperature mode changed: %s", body)
+			}
+			for _, key := range []string{"contextWindow", "num_ctx", "topK", "top_k", "seed", "repeatPenalty", "repeat_penalty", "localJson", "localThink", "format", "options", "response_format"} {
+				if body[key] != nil {
+					t.Fatalf("local parameter %q leaked into cloud API", key)
+				}
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"Ответ"},"finish_reason":"stop"}]}`))
+		}))
+		client := newClient("test-key", server.Client(), server.URL)
+		result, err := client.CompleteMessagesModel(context.Background(), models.DeepSeekFlashModel, []models.ChatMessage{{Role: "user", Content: "Привет"}}, settings)
+		server.Close()
+		if err != nil || result.Answer != "Ответ" {
+			t.Fatalf("cloud completion = %#v, %v", result, err)
+		}
+	}
+}
