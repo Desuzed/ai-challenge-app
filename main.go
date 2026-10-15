@@ -21,6 +21,7 @@ import (
 	"ai-challenge-app/internal/newsmcp"
 	"ai-challenge-app/internal/ollama"
 	"ai-challenge-app/internal/openrouter"
+	"ai-challenge-app/internal/projectmcp"
 	"ai-challenge-app/internal/rag"
 	"ai-challenge-app/internal/ragindex"
 	"ai-challenge-app/internal/weathermcp"
@@ -64,12 +65,17 @@ func main() {
 	if remoteClient != nil {
 		handler.SetRemoteModelLister(remoteClient)
 	}
-	persistentAgent, err := agent.NewPersistent(client, agent.NewJSONStore(agentHistoryFile))
+	historyPath := localSetting("AGENT_HISTORY_FILE", os.Getenv, os.ReadFile)
+	if historyPath == "" {
+		historyPath = agentHistoryFile
+	}
+	persistentAgent, err := agent.NewPersistent(client, agent.NewJSONStore(historyPath))
 	if err != nil {
 		log.Fatalf("load agent history: %v", err)
 	}
 	handler.SetAgent(persistentAgent)
 	persistentAgent.SetRetriever(&rag.Searcher{Root: ".", IndexDir: ".local/rag", Model: "embeddinggemma", Embedder: ragindex.Ollama{URL: ollamaURL, Model: "embeddinggemma", KeepAlive: "0"}})
+	persistentAgent.SetIndexer(&ragindex.Rebuilder{Root: ".", Output: ".local/rag", Model: "embeddinggemma", Embedder: ragindex.Ollama{URL: ollamaURL, Model: "embeddinggemma", KeepAlive: "0"}})
 	handler.SetOpenRouterClient(openrouter.NewClient(os.Getenv("OPENROUTER_API_KEY"), 120*time.Second))
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
@@ -105,7 +111,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("connect News MCP: %v", err)
 	}
-	mcpCatalog := mcpbridge.NewCatalog(yandexBridge, githubBridge, weatherBridge, newsBridge)
+	projectBridge, err := projectmcp.New(context.Background(), ".")
+	if err != nil {
+		log.Fatalf("connect Project MCP: %v", err)
+	}
+	mcpCatalog := mcpbridge.NewCatalog(yandexBridge, githubBridge, weatherBridge, newsBridge, projectBridge)
 	defer mcpCatalog.Close()
 	persistentAgent.SetToolRuntime(mcpCatalog)
 	mux.Handle("/api/chat", http.HandlerFunc(handler.Chat))

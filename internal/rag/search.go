@@ -32,6 +32,19 @@ type Searcher struct {
 	Embedder Embedder
 }
 
+type IndexInfo struct {
+	Model         string
+	Files, Chunks int
+}
+
+func (s *Searcher) IndexInfo() (IndexInfo, error) {
+	index, err := s.loadIndex()
+	if err != nil {
+		return IndexInfo{}, err
+	}
+	return IndexInfo{Model: index.Model, Files: len(index.Files), Chunks: len(index.Chunks)}, nil
+}
+
 type Match struct {
 	Chunk ragindex.Chunk
 	Score float64
@@ -54,11 +67,17 @@ type Match struct {
 // MinSimilarity protects the model from a confident-looking but unrelated
 // context. The defaults favour recall first and precision second.
 type SearchOptions struct {
-	CandidateLimit int
-	ResultLimit    int
-	MinSimilarity  float64
-	Rewrite        bool
-	Rerank         bool
+	// DocumentationOnly keeps developer help focused on prose/API descriptions,
+	// so command examples in Go code cannot crowd out the actual project guide.
+	DocumentationOnly bool
+	// ProjectOverview explicitly selects introductory README sections without
+	// lowering the semantic threshold for arbitrary project questions.
+	ProjectOverview bool
+	CandidateLimit  int
+	ResultLimit     int
+	MinSimilarity   float64
+	Rewrite         bool
+	Rerank          bool
 }
 
 type SearchResult struct {
@@ -117,10 +136,33 @@ func (s *Searcher) SearchWithOptions(ctx context.Context, question string, optio
 	}
 	var matches []Match
 	for _, chunk := range index.Chunks {
+		if options.DocumentationOnly {
+			switch strings.ToLower(filepath.Ext(chunk.Source)) {
+			case ".md", ".txt", ".json", ".yaml", ".yml":
+			default:
+				continue
+			}
+		}
 		if len(chunk.Vector) != len(vectors[0]) {
 			return SearchResult{}, errors.New("размерность эмбеддингов индекса и вопроса не совпадает")
 		}
 		matches = append(matches, Match{Chunk: chunk, Score: cosine(vectors[0], chunk.Vector)})
+	}
+	if options.ProjectOverview {
+		var overview []Match
+		for _, match := range matches {
+			if match.Chunk.Source == "README.md" {
+				match.CandidateSource = "overview"
+				match.QuerySource = "current_question"
+				overview = append(overview, match)
+				if len(overview) == min(2, options.ResultLimit) {
+					break
+				}
+			}
+		}
+		if len(overview) > 0 {
+			return SearchResult{OriginalQuery: original, RewrittenQuery: query, Candidates: overview, Matches: overview}, nil
+		}
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].Score == matches[j].Score {

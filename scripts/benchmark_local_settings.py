@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import json
-import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -13,8 +12,6 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
 OPENER = build_opener(ProxyHandler({}))
-BASE = dict(temperature=0.2, maxTokens=512, contextWindow=8192, topK=40,
-            seed=42, repeatPenalty=1, localThink=False, localJson=False)
 PROFILE = dict(name="Поддержка",
     perspective="Классифицируй обращения интернет-магазина и извлекай только явно указанные данные.",
     style="Кратко, точно, без догадок.",
@@ -36,35 +33,8 @@ def request(url, body=None, method=None, session=None):
 
 
 def cases():
-    rows = [line.split("|")[1:-1] for line in (ROOT / "docs/local-llm-optimization.md").read_text().splitlines()
-            if line.startswith("| ")][:13][1:]
-    variants = [({"temperature":0}, {"temperature":0.9}),
-                ({"temperature":0.1}, {"temperature":1.2}),
-                ({"maxTokens":64}, {"maxTokens":512}),
-                ({"contextWindow":2048}, {"contextWindow":8192}),
-                ({"contextWindow":2048}, {"contextWindow":8192}),
-                ({"topP":0.3}, {"topP":0.95}),
-                ({"temperature":0.8,"topK":10}, {"temperature":0.8,"topK":100}),
-                ({"temperature":0.8,"seed":42}, {"temperature":0.8,"seed":17}),
-                ({"repeatPenalty":1}, {"repeatPenalty":1.2}),
-                ({"maxTokens":1536,"localThink":False}, {"maxTokens":1536,"localThink":True}),
-                ({"localJson":False}, {"localJson":True}),
-                ({}, {})]
-    assert len(rows) == len(variants) == 12
-    result = []
-    for index, (row, (a, b)) in enumerate(zip(rows, variants)):
-        name, question, a_label, b_label, criterion = [part.strip() for part in row]
-        if index == 4:
-            question = (ROOT / "docs/local-llm-context-test.txt").read_text().strip()
-        question = re.sub(r" Для обоих запусков (?:temperature=0.8|max tokens=1536)\.", "", question)
-        settings = {}
-        for label, override in (("A", a), ("B", b)):
-            settings[label] = {**BASE, **override}
-            if "topP" in settings[label]:
-                settings[label].pop("temperature")
-        result.append(dict(id=index+1, name=name, question=question, criterion=criterion,
-                           labels={"A":a_label, "B":b_label}, settings=settings))
-    return result
+    """Load benchmark inputs independently of documentation layout."""
+    return json.loads((ROOT / "scripts/fixtures/local-model-cases.json").read_text())
 
 
 def save_report(path, report):

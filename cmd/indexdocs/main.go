@@ -18,9 +18,12 @@ func main() {
 	output := flag.String("output", ".local/rag", "directory for the two indexes and report")
 	model := flag.String("model", "embeddinggemma", "Ollama embedding model")
 	url := flag.String("ollama-url", "http://127.0.0.1:11434", "local Ollama URL")
-	files := flag.String("files", "", "comma-separated relative source paths (default: curated project corpus)")
+	files := flag.String("files", "", "comma-separated relative source paths (default: README, docs recursively, selected Go sources)")
 	flag.Parse()
-	paths := ragindex.DefaultFiles
+	paths, err := ragindex.DefaultSources(*root)
+	if err != nil && strings.TrimSpace(*files) == "" {
+		log.Fatal(err)
+	}
 	if strings.TrimSpace(*files) != "" {
 		paths = nil
 		for _, path := range strings.Split(*files, ",") {

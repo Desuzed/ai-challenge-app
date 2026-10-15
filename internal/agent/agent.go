@@ -17,6 +17,7 @@ import (
 
 	"ai-challenge-app/internal/models"
 	"ai-challenge-app/internal/rag"
+	"ai-challenge-app/internal/ragindex"
 )
 
 const maxMessageCharacters = 32000
@@ -136,7 +137,10 @@ type Agent struct {
 	users     map[string]*userState
 	tools     toolRuntime
 	retriever *rag.Searcher
-	newsJobs  map[string]context.CancelFunc
+	indexer   interface {
+		Rebuild(context.Context) (ragindex.Report, error)
+	}
+	newsJobs map[string]context.CancelFunc
 }
 
 type newsDigestSchedule struct {
@@ -157,6 +161,11 @@ func New(client completer) *Agent { return newAgent(client, nil, PersistentState
 // SetToolRuntime attaches an MCP-backed tool catalogue and executor.
 func (a *Agent) SetToolRuntime(runtime toolRuntime)  { a.tools = runtime }
 func (a *Agent) SetRetriever(searcher *rag.Searcher) { a.retriever = searcher }
+func (a *Agent) SetIndexer(indexer interface {
+	Rebuild(context.Context) (ragindex.Report, error)
+}) {
+	a.indexer = indexer
+}
 func NewPersistent(client completer, store Store) (*Agent, error) {
 	state, err := store.Load()
 	if err != nil {
@@ -307,6 +316,9 @@ func (a *Agent) respondWithUserOptionsRAG(ctx context.Context, userID, sessionID
 		c.hasGenerationSettings = true
 	}
 	previousMemory := copyTaskMemory(c.taskMemory)
+	if response, handled, err := a.projectCommandLocked(ctx, c, u, message, ragOptions); handled {
+		return response, err
+	}
 	turn := userTurnCount(c.activeMessagesLocked()) + 1
 	c.taskMemory = updateTaskMemory(c.taskMemory, message, turn)
 	var ragResult rag.SearchResult

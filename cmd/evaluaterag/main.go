@@ -50,16 +50,16 @@ type report struct {
 }
 
 var cases = []testCase{
-	{"Где приложение хранит историю диалога агента между перезапусками?", []string{"README.md"}, []string{".local/agent-history.json"}, nil},
-	{"Что имеет приоритет для DEEPSEEK_API_KEY: окружение процесса или .env?", []string{"main.go"}, []string{"окруж", ".env"}, nil},
-	{"Какой маршрут браузер использует для сообщения основному агенту?", []string{"README.md", "internal/handlers/handlers.go"}, []string{"/api/agent/chat", "post"}, nil},
-	{"Какие два способа разбиения документов реализованы в индексаторе?", []string{"README.md"}, []string{"1200", "150", "заголов"}, nil},
-	{"Где сохраняются два индекса и отчёт?", []string{"README.md"}, []string{".local/rag/", "index-fixed.json", "index-structure.json", "report.json"}, nil},
-	{"Какую информацию об источнике, файле, разделе и идентификаторе хранит каждый чанк локального индекса?", []string{"README.md"}, []string{"source", "title", "section", "chunk_id"}, nil},
-	{"Какие четыре MCP-сервера собираются в единый каталог при старте приложения?", []string{"main.go"}, []string{"яндекс", "github", "погод", "новост"}, nil},
-	{"Как соединены MCP-сервер и клиент внутри приложения?", []string{"README.md"}, []string{"in-memory", "transport"}, nil},
-	{"Какой период сбора погоды используется при отсутствии настройки интервала?", []string{"main.go"}, nil, [][]string{{"одна минут", "1 минут"}}},
-	{"Куда уходит API-ключ DeepSeek и виден ли он браузеру?", []string{"README.md"}, []string{"authorization", "браузер", "сервер"}, nil},
+	{"Где приложение хранит историю диалога агента между перезапусками?", []string{"docs/memory.md", "docs/api.md", "README.md"}, []string{".local/agent-history.json"}, nil},
+	{"Что имеет приоритет для DEEPSEEK_API_KEY: окружение процесса или .env?", []string{"docs/setup.md", "README.md", "main.go"}, []string{"окруж", ".env"}, nil},
+	{"Какой маршрут браузер использует для сообщения основному агенту?", []string{"docs/api.md", "docs/architecture.md", "README.md"}, []string{"/api/agent/chat", "post"}, nil},
+	{"Какие два способа разбиения документов реализованы в индексаторе?", []string{"docs/rag.md", "README.md"}, []string{"1200", "150", "заголов"}, nil},
+	{"Где сохраняются два индекса и отчёт?", []string{"docs/rag.md", "docs/api.md", "README.md"}, []string{".local/rag/", "index-fixed.json", "index-structure.json", "report.json"}, nil},
+	{"Какую информацию об источнике, файле, разделе и идентификаторе хранит каждый чанк локального индекса?", []string{"docs/rag.md", "README.md"}, []string{"source", "title", "section", "chunk_id"}, nil},
+	{"Какие пять MCP-серверов собираются в единый каталог при старте приложения?", []string{"docs/mcp.md", "README.md"}, []string{"github", "погод", "новост"}, [][]string{{"проект", "project"}, {"яндекс", "диск"}}},
+	{"Как соединены MCP-сервер и клиент внутри приложения?", []string{"docs/mcp.md", "README.md"}, []string{"in-memory", "transport"}, nil},
+	{"Какой период сбора погоды используется при отсутствии настройки интервала?", []string{"docs/mcp.md", "docs/setup.md", "main.go"}, nil, [][]string{{"одна минут", "одну минут", "1 минут", "60 секунд"}}},
+	{"Куда уходит API-ключ DeepSeek и виден ли он браузеру?", []string{"docs/setup.md", "README.md"}, []string{"authorization", "браузер", "сервер"}, nil},
 }
 
 func main() {

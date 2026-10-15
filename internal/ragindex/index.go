@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,7 +32,38 @@ var DefaultFiles = []string{
 	"README.md", "main.go", "internal/agent/agent.go",
 	"internal/agent/store.go", "internal/deepseek/client.go",
 	"internal/agent/task_memory.go", "internal/handlers/handlers.go", "internal/models/models.go",
-	"docs/rag-task-chat-corpus.md",
+	"internal/agent/help.go", "internal/agent/commands.go", "internal/ragindex/rebuild.go", "internal/projectmcp/bridge.go", "internal/mcpbridge/catalog.go",
+}
+
+// DefaultSources includes all documentation without manually maintaining a list.
+// Code remains explicitly selected; secrets, reports and test fixtures stay out.
+func DefaultSources(root string) ([]string, error) {
+	paths := append([]string(nil), DefaultFiles...)
+	err := filepath.WalkDir(filepath.Join(root, "docs"), func(path string, entry fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) && path == filepath.Join(root, "docs") {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("documentation symlinks are not supported: %s", path)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".md", ".txt", ".json", ".yaml", ".yml":
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			paths = append(paths, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	sort.Strings(paths)
+	return paths, err
 }
 
 type Document struct {
