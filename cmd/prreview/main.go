@@ -145,7 +145,7 @@ func run() error {
 }
 
 // Read only the requested setting, without evaluating shell syntax. CI never
-// reads .env from a checkout. Nonempty process environment always wins.
+// reads .env from a checkout. A nonempty process environment value must take precedence over .env.
 func setting(root, key string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value == "" {
 		return value
