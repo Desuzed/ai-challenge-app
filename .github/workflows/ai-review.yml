@@ -1,0 +1,89 @@
+name: AI code review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      ollama:
+        image: ollama/ollama:0.12.3
+        ports:
+          - 11434:11434
+    steps:
+      # Run only the reviewer/dependencies from the trusted base revision.
+      # PR blobs are fetched below but never checked out or executed.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check reviewer installation and secret
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          test -f cmd/prreview/main.go || { echo 'Merge the reviewer installation first; it runs from the base revision.'; exit 1; }
+          test -n "$DEEPSEEK_API_KEY" || { echo 'Add the DEEPSEEK_API_KEY repository Actions secret.'; exit 1; }
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build trusted reviewer
+        run: go build -o "$RUNNER_TEMP/prreview" ./cmd/prreview
+
+      - name: Fetch immutable PR objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh auth setup-git
+          git fetch --no-tags origin "$PR_HEAD_SHA"
+
+      - name: Load local embedding model
+        run: |
+          curl --fail --retry 10 --retry-connrefused --retry-delay 2 --max-time 30 http://127.0.0.1:11434/api/tags > /dev/null
+          curl --fail --max-time 600 --json '{"model":"embeddinggemma","stream":false}' http://127.0.0.1:11434/api/pull
+
+      - name: Review and publish
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          "$RUNNER_TEMP/prreview" -root . -repo "$GITHUB_REPOSITORY" -pr "$PR_NUMBER" -base "$PR_BASE_SHA" -head "$PR_HEAD_SHA" -model deepseek-flash -publish
+
+      - name: Show report in workflow summary
+        if: ${{ !cancelled() && hashFiles('.local/prreview/review.md') != '' }}
+        run: cat .local/prreview/review.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save review and RAG provenance
+        if: ${{ !cancelled() && hashFiles('.local/prreview/review.json') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ai-review-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          path: |
+            .local/prreview/review.json
+            .local/prreview/review.md
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
