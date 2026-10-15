@@ -34,10 +34,6 @@ func (a *Agent) projectCommandLocked(ctx context.Context, c *conversation, u *us
 				response, err = a.commandReplyLocked(c, u, message, "Используйте /diff без аргументов — команда покажет текущую git-ветку через MCP.")
 				return response, true, err
 			}
-			if c.task.Status == models.TaskPaused {
-				response, err = a.commandReplyLocked(c, u, message, "Задача на паузе: git-ветка через MCP не запрашивалась. Возобновите задачу и повторите /diff.")
-				return response, true, err
-			}
 			git, execution, gitErr := a.projectGitContext(ctx)
 			if gitErr != nil {
 				response, err = a.commandReplyLocked(c, u, message, "Не удалось получить текущую git-ветку: "+gitErr.Error())
