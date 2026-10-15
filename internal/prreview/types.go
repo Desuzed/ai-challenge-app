@@ -61,15 +61,17 @@ type FileReview struct {
 }
 
 type Report struct {
-	GeneratedAt  time.Time    `json:"generated_at"`
-	Repository   string       `json:"repository,omitempty"`
-	BaseSHA      string       `json:"base_sha"`
-	HeadSHA      string       `json:"head_sha"`
-	MergeBaseSHA string       `json:"merge_base_sha"`
-	Model        string       `json:"model"`
-	CorpusFiles  int          `json:"corpus_files"`
-	Files        []FileReview `json:"files"`
-	Findings     []Finding    `json:"findings"`
-	Sources      []Source     `json:"sources"`
-	Warnings     []string     `json:"warnings"`
+	GeneratedAt     time.Time    `json:"generated_at"`
+	Repository      string       `json:"repository,omitempty"`
+	BaseSHA         string       `json:"base_sha"`
+	HeadSHA         string       `json:"head_sha"`
+	MergeBaseSHA    string       `json:"merge_base_sha"`
+	Model           string       `json:"model"`
+	CorpusFiles     int          `json:"corpus_files"`
+	IndexedChunks   int          `json:"indexed_chunks"`
+	CandidateChunks int          `json:"candidate_chunks"`
+	Files           []FileReview `json:"files"`
+	Findings        []Finding    `json:"findings"`
+	Sources         []Source     `json:"sources"`
+	Warnings        []string     `json:"warnings"`
 }
