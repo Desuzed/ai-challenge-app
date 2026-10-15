@@ -70,7 +70,7 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          "$RUNNER_TEMP/prreview" -root . -repo "$GITHUB_REPOSITORY" -pr "$PR_NUMBER" -base "$PR_BASE_SHA" -head "$PR_HEAD_SHA" -publish
+          "$RUNNER_TEMP/prreview" -root . -repo "$GITHUB_REPOSITORY" -pr "$PR_NUMBER" -base "$PR_BASE_SHA" -head "$PR_HEAD_SHA" -model deepseek-flash -publish
 
       - name: Show report in workflow summary
         if: ${{ !cancelled() && hashFiles('.local/prreview/review.md') != '' }}
