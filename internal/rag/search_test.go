@@ -14,8 +14,93 @@ import (
 
 type fakeEmbedder struct{ vector []float64 }
 
+func TestOverviewReadsIndexedREADMEWithoutWeakeningOtherSearches(t *testing.T) {
+	root := t.TempDir()
+	text := "# Demo\nЛокальное приложение для работы с моделями.\n\n## Возможности\nПриложение сохраняет диалог и выполняет поиск документов."
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	docs, err := ragindex.Load(root, []string{"README.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ragindex.ChunkDocuments(docs, "structure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range chunks {
+		chunks[i].Vector = []float64{0, 1}
+	}
+	data, err := json.Marshal(ragindex.Index{Strategy: "structure", Model: "test-model", Files: docs, Chunks: chunks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index-structure.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Searcher{Root: root, IndexDir: root, Model: "test-model", Embedder: fakeEmbedder{[]float64{1, 0}}}
+	opts := DefaultSearchOptions()
+	opts.DocumentationOnly = true
+	regular, err := s.SearchWithOptions(context.Background(), "расскажи о проекте", opts)
+	if err != nil || len(regular.Matches) != 0 {
+		t.Fatalf("regular=%#v err=%v", regular, err)
+	}
+	opts.ProjectOverview = true
+	overview, err := s.SearchWithOptions(context.Background(), "расскажи о проекте", opts)
+	if err != nil || len(overview.Matches) == 0 || len(overview.Matches) > 2 || overview.Matches[0].Chunk.Source != "README.md" || overview.Matches[0].CandidateSource != "overview" || overview.Matches[0].Score != 0 {
+		t.Fatalf("overview=%#v err=%v", overview, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SearchWithOptions(context.Background(), "расскажи о проекте", opts); !errors.Is(err, ErrIndexStale) {
+		t.Fatalf("stale overview index accepted: %v", err)
+	}
+}
+
 func (f fakeEmbedder) Embed(_ context.Context, _ []string) ([][]float64, error) {
 	return [][]float64{f.vector}, nil
+}
+
+func TestDocumentationSearchDoesNotRankCommandCodeAboveGuide(t *testing.T) {
+	root := t.TempDir()
+	for name, text := range map[string]string{"guide.md": "# Structure\nThe project has backend, commands and browser files.", "command.go": "package demo\nfunc Help() {}"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	docs, err := ragindex.Load(root, []string{"guide.md", "command.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, err := ragindex.ChunkDocuments(docs, "structure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range chunks {
+		chunks[i].Vector = []float64{1, 0}
+		if chunks[i].Source == "guide.md" {
+			chunks[i].Vector = []float64{1, 1}
+		}
+	}
+	data, err := json.Marshal(ragindex.Index{Strategy: "structure", Model: "test-model", Files: docs, Chunks: chunks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index-structure.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Searcher{Root: root, IndexDir: root, Model: "test-model", Embedder: fakeEmbedder{[]float64{1, 0}}}
+	options := SearchOptions{CandidateLimit: 1, ResultLimit: 1, MinSimilarity: 0.35}
+	regular, err := s.SearchWithOptions(context.Background(), "overview", options)
+	if err != nil || len(regular.Matches) != 1 || regular.Matches[0].Chunk.Source != "command.go" {
+		t.Fatalf("regular=%#v err=%v", regular, err)
+	}
+	options.DocumentationOnly = true
+	help, err := s.SearchWithOptions(context.Background(), "overview", options)
+	if err != nil || len(help.Matches) != 1 || help.Matches[0].Chunk.Source != "guide.md" {
+		t.Fatalf("help=%#v err=%v", help, err)
+	}
 }
 
 func TestSearchRanksIndexedChunksAndDetectsChanges(t *testing.T) {

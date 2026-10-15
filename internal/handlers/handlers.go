@@ -28,9 +28,8 @@ const (
 	defaultTokens        = 512
 	reasoningTimeout     = 95 * time.Second
 	modelVersionsTimeout = 4 * time.Minute
-	// Leave a small margin over the provider timeout set in main, so the agent
-	// can return the provider result instead of cancelling it prematurely.
-	agentTimeout       = 125 * time.Second
+	// Bound the whole interactive turn, including retrieval and JSON repair.
+	agentTimeout       = 60 * time.Second
 	agentSessionCookie = "agent_session"
 	agentUserCookie    = "agent_user"
 )
@@ -426,6 +425,10 @@ func (h *Handler) AgentChat(w http.ResponseWriter, r *http.Request) {
 		requestTimeout = 0
 	} else if models.IsOllamaModel(input.Model) {
 		requestTimeout = 6 * time.Minute
+	}
+	parts := strings.Fields(input.Message)
+	if len(parts) > 0 && parts[0] == "/reindex" {
+		requestTimeout = 10 * time.Minute
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	if requestTimeout > 0 {
@@ -994,7 +997,15 @@ func errorResponse(err error) (int, string) {
 	case errors.Is(err, deepseek.ErrRateLimited):
 		return http.StatusTooManyRequests, "Слишком много запросов к DeepSeek. Повторите немного позже."
 	case errors.Is(err, deepseek.ErrTimeout):
-		return http.StatusGatewayTimeout, "DeepSeek не успел ответить за 120 секунд. Повторите запрос немного позже."
+		return http.StatusGatewayTimeout, "Истекло время ожидания ответа DeepSeek. В основном чате весь запрос ограничен 60 секундами. Повторите запрос позже или выберите другую модель."
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout, "Истекло время ожидания ответа. Повторите запрос позже."
+	case errors.Is(err, deepseek.ErrUpstream):
+		var upstream *deepseek.APIError
+		if errors.As(err, &upstream) && upstream.StatusCode != 0 {
+			return http.StatusBadGateway, fmt.Sprintf("DeepSeek вернул HTTP %d. Повторите запрос позже или выберите другую модель.", upstream.StatusCode)
+		}
+		return http.StatusBadGateway, "DeepSeek не вернул корректный ответ. Проверьте соединение или повторите запрос позже."
 	default:
 		return http.StatusBadGateway, "Не удалось получить ответ от модели. Попробуйте ещё раз."
 	}

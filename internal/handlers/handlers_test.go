@@ -404,6 +404,37 @@ func TestChatValidation(t *testing.T) {
 	}
 }
 
+func TestAgentChatReportsProviderTimeoutAndHTTPStatus(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		err     error
+		status  int
+		message string
+	}{
+		{"body timeout", deepseek.ErrTimeout, http.StatusGatewayTimeout, "60"},
+		{"turn deadline", context.DeadlineExceeded, http.StatusGatewayTimeout, "время ожидания"},
+		{"provider HTTP error", &deepseek.APIError{StatusCode: 503, Stage: "headers"}, http.StatusBadGateway, "HTTP 503"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/agent/chat", strings.NewReader(`{"message":"Привет","model":"deepseek-flash"}`))
+			recorder := httptest.NewRecorder()
+			client := &fakeClient{err: test.err}
+			handler := New(client)
+			handler.SetAgent(agent.New(client))
+			handler.AgentChat(recorder, request)
+			var result struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != test.status || !strings.Contains(result.Error, test.message) {
+				t.Fatalf("status=%d response=%s", recorder.Code, recorder.Body)
+			}
+		})
+	}
+}
+
 func TestChatErrors(t *testing.T) {
 	tests := []struct {
 		name string

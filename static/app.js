@@ -965,7 +965,15 @@ agentForm.addEventListener('submit', async (event) => {
   let settings;
   try { settings = readGenerationSettings(); } catch (error) { setStatus(error.message, true); return; }
   agentSubmit.disabled = true;
-  setStatus(activeTask.goal ? 'Агент проектирует… Можно нажать «Пауза», чтобы остановить работу.' : 'Агент отвечает…');
+  const waitingStatus = message === '/reindex' ? 'Перечитываю документы и пересобираю индексы…' : activeTask.goal ? 'Агент проектирует… Можно нажать «Пауза», чтобы остановить работу.' : 'Агент отвечает…';
+  const startedAt = performance.now();
+  const requestController = new AbortController();
+  const waitLimit = message.split(/\s+/)[0] === '/reindex' ? 660_000 : isRemoteOllamaModel(selectedAgentModel) ? 0 : isOllamaModel(selectedAgentModel) ? 420_000 : 75_000;
+  const waitTimer = waitLimit ? window.setTimeout(() => requestController.abort(), waitLimit) : null;
+  setStatus(waitingStatus);
+  const progressTimer = window.setInterval(() => {
+    setStatus(`${waitingStatus} Прошло ${Math.floor((performance.now() - startedAt) / 1000)} с.`);
+  }, 1000);
   try {
     await flushRecentMessagesSave();
     n = Number(recentMessages.value);
@@ -975,11 +983,13 @@ agentForm.addEventListener('submit', async (event) => {
     const submittedModelRevision = modelSelectionRevision;
     const requestBody = { message, recentMessages: n, strategy: contextStrategy.value, model: selectedAgentModel, ragEnabled: ragEnabled.checked, ragOptions, settings };
     requestLog.textContent = `БРАУЗЕР → BACKEND\nPOST /api/agent/chat\n${prettyJSON(requestBody)}\n\nОжидание ответа…`;
-    const response = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', body: JSON.stringify(requestBody) });
+    const response = await fetch('/api/agent/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store', signal: requestController.signal, body: JSON.stringify(requestBody) });
     const payload = await readAgentResponse(response);
     const responseModel = payload.model || requestBody.model;
     requestLog.textContent += `\n\nBACKEND → БРАУЗЕР\n${prettyJSON({
       httpStatus: response.status,
+      error: payload.error || null,
+      elapsedMs: Math.round(performance.now() - startedAt),
       provider: modelProvider(responseModel),
       model: modelLabel(responseModel),
       localRequest: isOllamaModel(responseModel),
@@ -988,9 +998,10 @@ agentForm.addEventListener('submit', async (event) => {
       localMetrics: payload.localMetrics || null,
       requestedSettings: settings,
       taskState: payload.task,
-      modelCallSkipped: payload.task?.status === 'paused',
+      modelCallSkipped: payload.ragModelCallSkipped ?? (payload.task?.status === 'paused' ? true : response.ok ? false : null),
       contextSentToModel: payload.requestMessages,
-      ragEnabled: payload.ragEnabled || false,
+      reindex: payload.reindex || null,
+      ragEnabled: payload.ragEnabled ?? (response.ok ? false : null),
       ragAbstained: payload.ragAbstained || false,
       ragReason: payload.ragReason || '',
       ragModelCallSkipped: payload.ragModelCallSkipped || false,
@@ -1008,8 +1019,15 @@ agentForm.addEventListener('submit', async (event) => {
     renderAgentHistory(payload.messages); renderContextState(payload, { preserveRecentMessages: submittedNRevision !== recentMessagesEditRevision, preserveModelSelection, preserveGenerationSettings }); renderTokenReport(payload);
     agentMessage.value = ''; agentMessage.focus();
     setStatus(payload.task?.status === 'paused' ? 'Задача на паузе: запрос к модели не выполнялся.' : 'Готово.');
-  } catch (error) { setStatus(readableFetchError(error, 'Не удалось получить ответ агента.'), true); }
-  finally { recentMessages.disabled = false; agentSubmit.disabled = false; }
+  } catch (error) {
+    const message = error.name === 'AbortError' ? `Сервер не завершил запрос за ${waitLimit / 1000} секунд. Проверьте соединение или повторите запрос позже.` : readableFetchError(error, 'Не удалось получить ответ агента.');
+    requestLog.textContent += `\n\nОШИБКА\n${message}\nВремя: ${Math.round(performance.now() - startedAt)} мс.`;
+    setStatus(message, true);
+  } finally {
+    window.clearInterval(progressTimer);
+    if (waitTimer) window.clearTimeout(waitTimer);
+    recentMessages.disabled = false; agentSubmit.disabled = false;
+  }
 });
   clearAgentHistory.addEventListener('click', async () => {
   if (!window.confirm('Удалить всю историю этого чата? Это действие нельзя отменить.')) return;

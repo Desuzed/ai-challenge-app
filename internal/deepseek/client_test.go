@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +68,47 @@ func TestCompleteErrors(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestCompletionTimeoutAfterHeadersIsNotReportedAsUpstreamFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(" \n"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	for _, clientTimeout := range []bool{false, true} {
+		t.Run(fmt.Sprint("clientTimeout=", clientTimeout), func(t *testing.T) {
+			ctx := context.Background()
+			httpClient := &http.Client{}
+			if clientTimeout {
+				httpClient.Timeout = 30 * time.Millisecond
+			} else {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
+				defer cancel()
+			}
+			_, err := newClient("key", httpClient, server.URL).CompleteMessages(ctx, []models.ChatMessage{{Role: "user", Content: "hello"}}, models.GenerationSettings{MaxTokens: 512})
+			if !errors.Is(err, ErrTimeout) || errors.Is(err, ErrUpstream) {
+				t.Fatalf("body timeout classified as %v", err)
+			}
+		})
+	}
+}
+
+func TestUpstreamStatusIsPreservedWithoutRawBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("private provider body"))
+	}))
+	defer server.Close()
+	_, err := newClient("private-key", server.Client(), server.URL).CompleteMessages(context.Background(), nil, models.GenerationSettings{MaxTokens: 512})
+	var upstream *APIError
+	if !errors.Is(err, ErrUpstream) || !errors.As(err, &upstream) || upstream.StatusCode != 503 || strings.Contains(err.Error(), "private") {
+		t.Fatalf("upstream diagnostics=%v", err)
 	}
 }
 

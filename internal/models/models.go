@@ -322,6 +322,7 @@ type TaskState struct {
 }
 
 type AgentResponse struct {
+	Reindex             *ReindexSummary          `json:"reindex,omitempty"`
 	LocalMetrics        *LocalMetrics            `json:"localMetrics,omitempty"`
 	Answer              string                   `json:"answer"`
 	FinishReason        string                   `json:"finishReason,omitempty"`
@@ -352,6 +353,14 @@ type AgentResponse struct {
 	GlobalInvariants    []Invariant              `json:"globalInvariants,omitempty"`
 	PlannerMode         string                   `json:"plannerMode"`
 	ToolExecutions      []ToolExecution          `json:"toolExecutions,omitempty"`
+}
+
+type ReindexSummary struct {
+	Files           int    `json:"files"`
+	FixedChunks     int    `json:"fixedChunks"`
+	StructureChunks int    `json:"structureChunks"`
+	EmbeddingModel  string `json:"embeddingModel"`
+	DurationMS      int64  `json:"durationMs"`
 }
 
 // AgentModelsResponse is the safe, key-free catalogue used by the chat UI.

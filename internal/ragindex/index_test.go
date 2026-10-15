@@ -22,6 +22,27 @@ func (stubEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error
 
 type rejectingEmbedder struct{}
 
+func TestDefaultSourcesDiscoversNestedDocsAndExcludesLocalData(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"docs/architecture.md", "docs/api/schema.json", "docs/.env", ".local/private.md", "scripts/fixtures/private.txt"} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := DefaultSources(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(paths, "\n")
+	if !strings.Contains(joined, "docs/architecture.md") || !strings.Contains(joined, "docs/api/schema.json") || strings.Contains(joined, ".env") || strings.Contains(joined, "private") {
+		t.Fatalf("sources=%#v", paths)
+	}
+}
+
 func (rejectingEmbedder) Embed(_ context.Context, _ []string) ([][]float64, error) {
 	return nil, os.ErrInvalid
 }

@@ -29,7 +29,7 @@
 
           <form id="agent-form">
             <label for="agent-message">Сообщение</label>
-            <textarea id="agent-message" name="message" rows="4" maxlength="32000" autofocus placeholder="Опишите проект или задайте вопрос агенту-проектировщику…"></textarea>
+            <textarea id="agent-message" name="message" rows="4" maxlength="32000" autofocus placeholder="Задайте вопрос или введите /help для помощи по проекту"></textarea>
             <div class="agent-actions">
               <div class="send-controls">
                 <button id="agent-submit" type="submit">Отправить</button>
@@ -42,6 +42,7 @@
           </form>
 
           <p id="status" class="status" aria-live="polite"></p>
+          <p class="hint">/help &lt;вопрос&gt; — помощь по проекту; /structure — структура; /diff — git-ветка; /reindex — обновить документы.</p>
 
           <details class="task-memory-panel">
             <summary>Память задачи</summary>

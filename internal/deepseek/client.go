@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -29,6 +30,32 @@ var (
 	ErrTimeout      = errors.New("DeepSeek API request timed out")
 	ErrUpstream     = errors.New("DeepSeek API request failed")
 )
+
+// APIError contains safe diagnostics only: never a key, prompt or raw body.
+type APIError struct {
+	StatusCode int
+	Stage      string
+}
+
+func (e *APIError) Error() string {
+	if e.StatusCode != 0 {
+		return fmt.Sprintf("DeepSeek HTTP %d (%s)", e.StatusCode, e.Stage)
+	}
+	return "DeepSeek request failed (" + e.Stage + ")"
+}
+
+func (e *APIError) Unwrap() error { return ErrUpstream }
+
+func requestFailure(ctx context.Context, err error, stage string) error {
+	var timeout net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
+		return fmt.Errorf("%w (%s)", ErrTimeout, stage)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return context.Canceled
+	}
+	return &APIError{Stage: stage}
+}
 
 type Client struct {
 	apiKey     string
@@ -166,10 +193,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, ErrTimeout
-		}
-		return nil, ErrUpstream
+		return nil, requestFailure(ctx, err, "connect")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -179,7 +203,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		return nil, ErrRateLimited
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, ErrUpstream
+		return nil, &APIError{StatusCode: resp.StatusCode, Stage: "headers"}
 	}
 	var decoded struct {
 		Data []struct {
@@ -187,7 +211,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&decoded); err != nil {
-		return nil, ErrUpstream
+		return nil, requestFailure(ctx, err, "read_body")
 	}
 	ids := make([]string, 0, len(decoded.Data))
 	for _, item := range decoded.Data {
@@ -237,10 +261,7 @@ func (c *Client) completeMessages(ctx context.Context, modelName string, message
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return Completion{}, ErrTimeout
-		}
-		return Completion{}, ErrUpstream
+		return Completion{}, requestFailure(ctx, err, "connect")
 	}
 	defer resp.Body.Close()
 
@@ -251,15 +272,15 @@ func (c *Client) completeMessages(ctx context.Context, modelName string, message
 		return Completion{}, ErrRateLimited
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return Completion{}, ErrUpstream
+		return Completion{}, &APIError{StatusCode: resp.StatusCode, Stage: "headers"}
 	}
 
 	var decoded completionResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&decoded); err != nil {
-		return Completion{}, ErrUpstream
+		return Completion{}, requestFailure(ctx, err, "read_body")
 	}
 	if len(decoded.Choices) == 0 || (strings.TrimSpace(decoded.Choices[0].Message.Content) == "" && len(decoded.Choices[0].Message.ToolCalls) == 0) {
-		return Completion{}, ErrUpstream
+		return Completion{}, &APIError{Stage: "empty_completion"}
 	}
 	answer := strings.TrimSpace(strings.ReplaceAll(decoded.Choices[0].Message.Content, models.StopSequence, ""))
 	return Completion{Answer: answer, FinishReason: decoded.Choices[0].FinishReason, Usage: models.ModelUsage{
