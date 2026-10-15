@@ -91,10 +91,16 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	r.Warnings = append(r.Warnings, warnings...)
 	r.CorpusFiles = len(texts)
 	logf(opts, "Building RAG for %d tracked files at %s", len(texts), r.HeadSHA[:12])
-	pools, err := buildPools(ctx, opts, snapshotRoot, tmp, texts)
+	queries, err := corpusQueries(ctx, opts, r)
 	if err != nil {
 		return r, err
 	}
+	pools, indexed, candidates, err := buildPools(ctx, opts, snapshotRoot, tmp, texts, queries)
+	if err != nil {
+		return r, err
+	}
+	r.IndexedChunks, r.CandidateChunks = indexed, candidates
+	logf(opts, "RAG ready: embedded %d/%d candidate chunks", indexed, candidates)
 	if len(pools) < 2 {
 		r.Warnings = append(r.Warnings, "Корпус не содержит одновременно документацию и код; полнота RAG ограничена")
 	}
@@ -223,8 +229,9 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	return r, nil
 }
 
-func buildPools(ctx context.Context, opts Options, root, tmp string, texts map[string]string) ([]pool, error) {
+func buildPools(ctx context.Context, opts Options, root, tmp string, texts map[string]string, queries []corpusQuery) ([]pool, int, int, error) {
 	var pools []pool
+	indexed, candidates := 0, 0
 	for _, kind := range []string{"documentation", "code"} {
 		var paths []string
 		for name := range texts {
@@ -238,19 +245,31 @@ func buildPools(ctx context.Context, opts Options, root, tmp string, texts map[s
 		sort.Strings(paths)
 		docs, err := ragindex.Load(root, paths)
 		if err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
-		indexes, report, err := ragindex.BuildCached(ctx, docs, opts.EmbeddingModel, opts.Embedder, nil)
+		chunks, err := ragindex.ChunkDocuments(docs, "structure")
 		if err != nil {
-			return nil, err
+			return nil, 0, 0, err
 		}
+		candidates += len(chunks)
+		selected := selectChunks(chunks, queries, kind)
+		indexed += len(selected)
+		logf(opts, "Selected %d/%d %s chunks for embedding", len(selected), len(chunks), kind)
+		if len(selected) == 0 {
+			continue
+		}
+		if err := embedChunks(ctx, opts, kind, selected); err != nil {
+			return nil, 0, 0, err
+		}
+		index := ragindex.Index{Strategy: "structure", Model: opts.EmbeddingModel, Files: docs, Chunks: selected}
+		report := ragindex.Report{Model: opts.EmbeddingModel, CorpusFiles: paths}
 		dir := filepath.Join(tmp, kind)
-		if err := ragindex.Save(dir, indexes, report); err != nil {
-			return nil, err
+		if err := ragindex.Save(dir, []ragindex.Index{index}, report); err != nil {
+			return nil, 0, 0, err
 		}
 		pools = append(pools, pool{kind, &rag.Searcher{Root: root, IndexDir: dir, Model: opts.EmbeddingModel, Embedder: opts.Embedder}})
 	}
-	return pools, nil
+	return pools, indexed, candidates, nil
 }
 
 // excerpts keep whole small files, otherwise merge windows around changed
