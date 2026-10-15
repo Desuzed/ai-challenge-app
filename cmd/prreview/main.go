@@ -39,11 +39,14 @@ func run() error {
 	title := flag.String("title", "Code review", "change intent for local revision mode")
 	output := flag.String("output", ".local/prreview", "directory for review.md and review.json")
 	maxFiles := flag.Int("max-files", 20, "maximum reviewed files per run (1-100)")
-	model := flag.String("model", models.DeepSeekFlashModel, "DeepSeek model")
+	model := flag.String("model", models.DeepSeekFlashModel, "DeepSeek model (only deepseek-flash is supported)")
 	embedModel := flag.String("embedding-model", "embeddinggemma", "local Ollama embedding model")
 	ollamaURL := flag.String("ollama-url", "", "local Ollama URL (otherwise OLLAMA_URL or loopback default)")
 	timeout := flag.Duration("timeout", 20*time.Minute, "whole review timeout")
 	flag.Parse()
+	if *model != models.DeepSeekFlashModel {
+		return errors.New("PR review is restricted to deepseek-flash")
+	}
 	if flag.NArg() != 0 || *pr < 0 || (*publish && *pr == 0) || *timeout <= 0 {
 		return errors.New("invalid arguments; use -help (publishing requires -pr)")
 	}
