@@ -44,6 +44,7 @@ func Markdown(r Report) string {
 		}
 	}
 	fmt.Fprintf(&b, "Проверено файлов: **%d из %d**. Корпус RAG: %d файлов; найдено фрагментов документации: %d, кода: %d.\n\n", reviewed, len(r.Files), r.CorpusFiles, docs, code)
+	fmt.Fprintf(&b, "Эмбеддинги: %d из %d фрагментов после предварительного отбора по diff. Остальные фрагменты не проходили векторный поиск.\n\n", r.IndexedChunks, r.CandidateChunks)
 	b.WriteString("Это автоматические замечания, требующие проверки человеком. Пустой список не доказывает отсутствие ошибок.\n\n")
 	omitted := 0
 	for _, category := range []struct{ key, title string }{{"bug", "Потенциальные баги"}, {"architecture", "Архитектурные проблемы"}, {"recommendation", "Рекомендации"}} {
