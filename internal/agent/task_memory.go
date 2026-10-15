@@ -34,7 +34,7 @@ func updateTaskMemory(memory models.TaskMemory, message string, turn int) models
 			case "уточнение:":
 				memory.Clarifications = appendMemoryNote(memory.Clarifications, value, trimmed, turn)
 			case "ограничения:":
-				memory.Constraints = parseMemoryNotes(value, trimmed, turn)
+				memory.Constraints = append(memory.Constraints, parseMemoryNotes(value, trimmed, turn)...)
 			case "термины:":
 				memory.Terms = parseMemoryNotes(value, trimmed, turn)
 			case "термин:":
